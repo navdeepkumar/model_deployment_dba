@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+explore.py
+explore2.py
+*.log
+.DS_Store
+backend_pid.txt
+frontend_pid.txt
+backend_stdout.log
+backend_stderr.log
+frontend_stdout.log
+frontend_stderr.log
