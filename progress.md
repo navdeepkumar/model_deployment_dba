@@ -483,3 +483,30 @@ files on disk directly:
   `super_kart_model_deployment` checkout as well, updated its README's
   deployment instructions for the new frontend and the `BACKEND_URL`
   nuance, and pushed there too.
+
+### 7. Made the single record Data step easier to fill in
+Ran both apps locally (Flask on `127.0.0.1:7860`, the frontend served by
+`python -m http.server 8501`) so the user could try the wizard directly.
+They asked for the Data step to be less like one long form. Confirmed with
+them: keep it as a single wizard step, but organize the nine fields into
+two clearly labeled, visually separated sections, Product Details and
+Store Details, each with an icon, a short description, and its own
+grouping box. Left the Batch Upload path as is, it is already a single
+simple dropzone.
+
+Changes, all in `StepSingleForm` inside `frontend_files/src/app.js`:
+- Two `<section class="field-section">` blocks, each with an icon, a
+  heading, and a one-line description of what belongs in it.
+- Reordered fields within each section to a more natural reading order
+  (Product Type and MRP first, then the rest), matching order carried
+  through to the review screen's summary as well, so what the user reviews
+  reads in the same order they filled it in.
+- Shortened the "Product Allocated Area" label and moved its explanation
+  into a helper line under the field instead of a long inline label.
+- Verified with a screenshot and the same Playwright end-to-end test used
+  earlier in this session, single prediction flow still completes with a
+  real result and no console errors.
+- Re-embedded `app.js` into `build_notebook.py`, rebuilt the notebook (241
+  cells), re-executed end to end, 0 errors, Docker validation still passes.
+  Committed and pushed to `model_deployment_dba`, then synced the same
+  `frontend_files/` into `super_kart_model_deployment` and pushed there.
