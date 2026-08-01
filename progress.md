@@ -590,3 +590,69 @@ authenticated:
   what to do if the Codespace has gone to sleep from inactivity.
 - Rebuilt nothing else, committed the updated notebook and both READMEs,
   pushed to `model_deployment_dba`.
+
+## Chasing down a public port 404 and redeploying on a fresh Codespace
+
+Some time after the previous deployment was documented, the public URLs
+stopped answering. Both `https://superkart-deploy-v7r5rgvjx9hpgg6-7860...`
+and the matching frontend URL returned a bare `404` with an empty HTML
+body, while a local SSH tunnel through the same Codespace to the same
+port kept returning `200` the whole time. That split told us the
+containers themselves were healthy, the problem lived somewhere in
+GitHub's own edge layer for that specific Codespace.
+
+Ruled out several things one at a time before finding the real cause:
+
+- A `Codespaces Prebuilds` GitHub Actions workflow was running in the
+  background on every push. It builds a cached image for future new
+  Codespaces on GitHub's own infrastructure and has no way to reach into
+  an already running Codespace's network stack, canceling it changed
+  nothing, confirmed unrelated.
+- Toggling port visibility back and forth, waiting a few minutes at a
+  time, testing with browser headers and cache busting, none of it
+  changed the response. Every retoggle likely reset whatever propagation
+  timer GitHub runs internally, which in hindsight only made the
+  debugging noisier.
+- Checked `gh codespace view --json` for anything unusual about this
+  specific Codespace and found `"prebuild": true`, this particular
+  Codespace had been created straight from a prebuild template rather
+  than from a fresh container build. Combined with it running in the
+  `SouthEastAsia` region, this looked like the most likely culprit, some
+  combination of prebuild-created Codespaces and that particular region's
+  edge not registering the port tunnel correctly.
+
+Rather than keep guessing, created a second Codespace as a direct test,
+`gh codespace create --location EastUs` with no prebuild involved
+(`"prebuild": false` this time). Built both Docker images fresh inside
+it, started the backend and frontend containers on the same shared
+network as before, forwarded both ports once, and set them public. This
+time the public URLs answered immediately with GitHub's real one-time
+warning page instead of a raw 404, confirming the theory: the fault was
+specific to that one Codespace's edge registration, not anything wrong
+with the containers, the Dockerfiles, or how ports were being forwarded.
+
+Ran the full Playwright suite against the new live URLs end to end,
+single prediction, batch prediction, history persistence, docs, help,
+and contact pages, sample CSV download, and a direct call to the
+history API to confirm the backend itself recorded what the UI showed.
+Every check passed, one history-page assertion needed a longer wait
+before it passed reliably, a rendering delay rather than a real defect.
+
+Cleaned up after the exercise: cleared the test predictions out of the
+live history table so a first-time visitor sees an empty history rather
+than debugging data, deleted the broken original Codespace entirely, and
+killed the now-orphaned local SSH tunnel processes still bound to its
+ports. Also added a `restart: unless-stopped` policy to both containers
+on the new Codespace, so a Codespace that resumes from an idle stop
+brings its containers back up on its own instead of needing another
+manual `docker run`.
+
+Updated both `README.md` files with the new Codespace's URLs
+(`superkart-deploy2-qg4x49q6w6h9x5v`) and a note about the restart
+policy. Filled in the notebook's `model_root_url` placeholder with the
+new backend URL and re-ran the full notebook end to end, all 94 code
+cells executed clean including the previously skipped live inference
+cells, which now show a real `200` response, an actual predicted sales
+value, a real ten-row batch result, and the live history endpoint
+reflecting both of those calls. Committed the refreshed notebook and
+both READMEs.

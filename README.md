@@ -14,15 +14,17 @@ The app is running in a GitHub Codespace built from the
 [`super_kart_model_deployment`](https://github.com/navdeepkumar/super_kart_model_deployment)
 repository, the bare minimum deployment package that repository holds:
 
-- Frontend (start here): https://superkart-deploy-v7r5rgvjx9hpgg6-8501.app.github.dev
-- Backend API: https://superkart-deploy-v7r5rgvjx9hpgg6-7860.app.github.dev
+- Frontend (start here): https://superkart-deploy2-qg4x49q6w6h9x5v-8501.app.github.dev
+- Backend API: https://superkart-deploy2-qg4x49q6w6h9x5v-7860.app.github.dev
 
 The first visit to either link shows a one-time GitHub notice about
 accessing a development port, this is expected, click Continue to reach
-the app. A Codespace stops itself after a period of inactivity, if the
-links do not respond, restart it from the
-[Codespaces list](https://github.com/codespaces), the URLs stay the same
-as long as the Codespace itself is not deleted.
+the app. Both containers run with a `restart: unless-stopped` policy, so
+they come back on their own if the Codespace resumes from an idle stop.
+If the links do not respond at all, the Codespace itself may have been
+stopped for longer than its idle window, restart it from the
+[Codespaces list](https://github.com/codespaces). The URLs stay the same
+as long as the Codespace itself is not deleted and recreated.
 
 ---
 
