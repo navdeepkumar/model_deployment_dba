@@ -279,3 +279,76 @@ without Docker.
   push to GitHub, a forwarded URL placeholder, and both online and batch
   inference, plus insights, recommendations, and a cleanly structured,
   fully executed, well-commented notebook with no errors.
+
+---
+
+## 2026-08-01, Session 4: Random sampling, three-way split, second repo
+
+The user asked for three notebook changes (random row sampling in the data
+overview, the same after feature engineering, and a proper train,
+validation, and test split instead of just train and test), and asked to
+push a bare-minimum deployment package to a second, separate repository
+(`super_kart_model_deployment`), with deployment instructions.
+
+### 1. Clarifying questions
+Asked and confirmed before making changes:
+- The blank numbered item 4 in the request had nothing intended for it,
+  skip it.
+- "Bare minimum" for the second repo means `backend_files/`,
+  `frontend_files/`, and a README with deployment steps, not the notebook
+  or the raw data.
+- Split ratio: 60% train, 20% validation, 20% test.
+- The validation set decides the final model among all baseline and tuned
+  candidates. The test set is not touched for that decision at all, only
+  used afterward to report the chosen model's real performance.
+
+### 2. Notebook changes
+- Added a random 5-row sample (`df.sample(n=5, random_state=1)`) right
+  after head and tail in the Data Overview section, since head and tail
+  alone only show rows from the two ends of the file.
+- Added `df.tail()` and a random sample after feature engineering as well,
+  so the engineered columns (`Product_Id_char`, `Store_Age_Years`,
+  `Product_Type_Category`) are visible across a spread of rows, not just
+  the first five.
+- Replaced the single 80/20 train-test split with a three-way 60/20/20
+  train, validation, and test split. Reworked the baseline fitting loop,
+  the `GridSearchCV` tuning loop, and the model comparison tables to score
+  every candidate on train and validation only. The 12-way comparison and
+  final model selection now rank on validation RMSE, not test RMSE.
+  The test set is used for the first time only after the final model has
+  already been picked, in the "Final Model Performance on the Test Set"
+  section, and again just after that purely to confirm the serialized
+  model reproduces the same predictions once reloaded. Added markdown
+  throughout explaining why this is different from `GridSearchCV`'s own
+  5-fold cross-validation, which only ever touches the training split and
+  serves a different purpose (picking hyperparameters within one model
+  family, not comparing across families).
+- Re-executed the notebook end to end: 228 cells, 0 errors. Split sizes
+  came out to 5,257 train, 1,753 validation, 1,753 test rows out of 8,763
+  total. Final model selected on validation RMSE was XGBoost (Tuned)
+  again, with a test RMSE of about 283.8 and R-squared of about 0.928,
+  consistent with the two-way split result from Session 2 and 3.
+
+### 3. Second repository: super_kart_model_deployment
+- Created a separate local directory outside this project
+  (`super_kart_model_deployment`, a sibling folder, not nested inside this
+  repository) and copied in only `backend_files/` and `frontend_files/`
+  from this project, plus a new `.gitignore` and a dedicated `README.md`
+  covering three ways to run it: inside a GitHub Codespace with Docker,
+  with Docker on a local machine, and without Docker at all.
+- Initialized a fresh git repository there, pointed at
+  `https://github.com/navdeepkumar/super_kart_model_deployment.git`, and
+  committed the 9 files in one commit through a Python subprocess call, to
+  keep the same no-attribution commit hygiene used in the main repository.
+- The push was rejected with a 403 ("Permission to
+  navdeepkumar/super_kart_model_deployment.git denied to navdeepkumar"),
+  even though the account is the owner and `gh api` reports admin access
+  to the repository. The response header
+  `X-Accepted-Github-Permissions: metadata=read` points to the configured
+  GitHub personal access token being a fine-grained token whose repository
+  access list does not include this new repository, most likely because it
+  was originally scoped only to `model_deployment_dba`. This is a
+  credential scope issue on GitHub's side, not something fixable from this
+  environment. The commit is ready locally and waiting on the user to
+  either add `super_kart_model_deployment` to the token's repository
+  access list, or supply a token that already covers it.

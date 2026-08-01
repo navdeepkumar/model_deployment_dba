@@ -92,6 +92,12 @@ deployment can be reproduced without re-running the notebook.
   They represent legitimate high-value observations, and every model built
   here is a tree-based ensemble, which is not sensitive to the scale of
   extreme values.
+- **Data split:** 60% train, 20% validation, 20% test. Validation decides
+  which model wins, test is only used afterward to report the final
+  model's real performance. `GridSearchCV`'s own 5-fold cross-validation
+  runs entirely inside the training split and serves a different purpose:
+  picking hyperparameters within one model family, not comparing across
+  families.
 - **Metric of choice:** RMSE (same unit as the target, penalizes large
   forecasting errors, the most relevant behavior for inventory and
   supply-chain risk), tracked alongside MAE, R-squared, Adjusted R-squared,
@@ -103,10 +109,10 @@ deployment can be reproduced without re-running the notebook.
   features, `OneHotEncoder` for categorical features).
 - **Hyperparameter tuning:** `GridSearchCV` (5-fold CV, scoring on
   `neg_root_mean_squared_error`) for all six models.
-- **Final model:** selected by lowest test-set RMSE among all 12 candidates
-  (baseline and tuned, for each of the 6 families). See the notebook's
-  "Model Performance Comparison" section for the exact numbers from your
-  own run.
+- **Final model:** selected by lowest validation RMSE among all 12
+  candidates (baseline and tuned, for each of the 6 families), then
+  checked once against the held-out test set. See the notebook's "Model
+  Performance Comparison" section for the exact numbers from your own run.
 - **Serialization:** the entire winning `Pipeline` (preprocessing and model
   together) is serialized with `joblib` to
   `backend_files/superkart_model.joblib`, so the Flask API only needs to
