@@ -352,3 +352,134 @@ Asked and confirmed before making changes:
   environment. The commit is ready locally and waiting on the user to
   either add `super_kart_model_deployment` to the token's repository
   access list, or supply a token that already covers it.
+
+---
+
+## 2026-08-01, Session 5: Web Components frontend, replacing Streamlit
+
+The user asked to replace the Streamlit frontend with a hand-built Web
+Components UI, more of a step-by-step workflow than a single form, for a
+more professional look and more control over behavior. They confirmed:
+vanilla Custom Elements with no build step, a full replacement of
+Streamlit rather than an addition, a 4-step wizard, a clean corporate
+dashboard look, and Nginx serving the built static files. They also
+confirmed the second repository's GitHub token permissions had been fixed.
+
+### 1. Second repository unblocked
+Retried the push that was blocked in the prior session. It went through
+once the user updated the fine-grained token's repository access list.
+Verified on GitHub: `super_kart_model_deployment` now has `.gitignore`,
+`README.md`, `backend_files/`, and `frontend_files/` at its root, in one
+clean commit with no attribution trailer.
+
+### 2. New frontend: a 4-step Web Components wizard
+Replaced `frontend_files/app.py` (Streamlit) entirely with a static site:
+- `index.html`, `env.js`, `src/tokens.css`, `src/app.js`. No framework, no
+  bundler, one ES module defines nine custom elements: `step-indicator`,
+  `step-mode-select`, `step-single-form`, `step-batch-upload`,
+  `step-review`, `step-results`, `history-panel`, `backend-settings`, and
+  `app-shell`, the controller that owns wizard state and swaps step
+  elements into view based on it.
+- The workflow: pick a mode (single record or batch CSV), enter or upload
+  data, review it, see the result. A step indicator tracks progress, a
+  history panel logs predictions made so far in the session.
+- Design tokens (`tokens.css`) are plain CSS custom properties on `:root`,
+  one of the few things that cross a Shadow DOM boundary by design, so
+  every component reads the same palette and spacing without leaking
+  styles into or out of its own Shadow DOM. A shared, adopted
+  `CSSStyleSheet` covers buttons, cards, form fields, and tables so nine
+  components do not each redefine the same rules.
+- Reference data and the engineered feature derivation
+  (`Product_Id_char`, `Store_Age_Years`, `Product_Type_Category`) were
+  ported over from the old Streamlit app's Python logic into equivalent
+  JavaScript, kept in sync with the training notebook's feature
+  engineering step.
+
+### 3. The architectural difference that mattered most
+A Python-based frontend (Streamlit) makes its API calls to the backend
+from the server side, inside the container, so a Docker-internal hostname
+like `superkart-backend` works fine, the browser never sees it. A static
+frontend calls the backend with `fetch()` **from the browser itself**,
+which sits outside the Docker network entirely. This means:
+- `superkart-backend:7860` only ever works between containers, never from
+  a real browser.
+- Locally with Docker, the frontend needs `BACKEND_URL` set to
+  `http://localhost:7860`, the port published to the host.
+- In Codespaces, it needs the **forwarded URL** for the backend's port,
+  only known once that port is made public, a value that cannot be baked
+  into the image at build time.
+- The backend now needs CORS enabled, since the browser enforces it on
+  cross-origin `fetch()` calls that a server-side Python `requests` call
+  never triggered. Added `flask-cors` to `backend_files/app.py` and its
+  `requirements.txt`.
+
+Handled with two mechanisms: `docker-entrypoint.d/40-inject-backend-url.sh`
+regenerates `env.js` from the `BACKEND_URL` environment variable every
+time the frontend container starts (the official Nginx image runs any
+script under `/docker-entrypoint.d/` automatically), and a small settings
+control in the app's header lets the URL be changed at any time from
+inside the browser, saved to `localStorage`, which is what the Codespaces
+case needs since that URL is not known until after the container is
+already running.
+
+### 4. A Windows-specific bug caught before it shipped
+The `%%writefile` magic used throughout this notebook to generate
+deployment files opens its target file in Windows text mode, which
+silently turns every `\n` into `\r\n`. Confirmed this directly by running
+a throwaway `%%writefile` cell and reading the result back as raw bytes.
+Harmless for HTML, CSS, JS, `nginx.conf`, and a Dockerfile, all tolerate
+CRLF without issue, but fatal for `40-inject-backend-url.sh`: a shell
+script with a `\r` sitting right after its `#!/bin/sh` line fails to
+launch inside the Linux container at all. That one file is written with a
+plain Python `open(..., newline="\n")` call instead of the `%%writefile`
+magic, forcing LF regardless of the platform this notebook runs on.
+Also normalized every new frontend file on disk to LF and added a
+`.gitattributes` (`* text=auto eol=lf`) so this cannot regress silently
+from an editor's default line ending on a future edit.
+
+### 5. Verification before touching the notebook
+Before embedding anything into `build_notebook.py`, validated the real
+files on disk directly:
+- `node --check` on `app.js` for syntax correctness.
+- A full headless browser run (Playwright, Chromium) driving the actual
+  UI end to end: mode selection, filling the single-record form, review,
+  submit, seeing a real prediction from the real backend, then the same
+  again for a batch CSV upload, with zero console errors either time.
+- A full Docker build and run of both images on a shared network,
+  confirmed the entrypoint script correctly regenerates `env.js`,
+  confirmed the CORS preflight and the actual `POST` both return the
+  right `Access-Control-Allow-Origin` header, and re-ran the same
+  Playwright script against the Dockerized containers this time, catching
+  the `BACKEND_URL` browser-reachability issue directly (the default
+  Docker-hostname value produced a real "Failed to fetch" in the browser
+  until corrected) before it could show up as a confusing bug report
+  later.
+- Only after all of this passed were the files embedded into
+  `build_notebook.py`, read fresh from disk into the generator script so
+  the notebook's `%%writefile` cells are byte-identical to what actually
+  ships, verified with a direct comparison between the notebook's cell
+  source and the files on disk.
+
+### 6. Notebook and documentation updates
+- Rewrote the "Deployment - Frontend" section of `build_notebook.py`
+  end to end: new markdown explaining the Web Components approach and the
+  backend URL nuance above, and `%%writefile` cells for all seven new
+  frontend files in place of the old Streamlit ones.
+- Updated "Running the Application Locally (Without Docker)" to use
+  `python -m http.server 8501` for the frontend instead of
+  `streamlit run`.
+- Updated "Docker Deployment (Local Validation)" to start the frontend
+  container with `BACKEND_URL=http://127.0.0.1:7860`, read back `env.js`
+  from inside the running container to confirm the override took effect,
+  and send the prediction request with an `Origin` header to check the
+  CORS response header the same way a real browser would.
+- Updated the git push cell's commit message and every remaining mention
+  of Streamlit in markdown and comments across `build_notebook.py` and
+  `README.md`.
+- Re-executed the full notebook: 241 cells, 0 errors, Docker validation
+  passed with the corrected `BACKEND_URL`, `CORS header present: True`.
+- Committed and pushed to `model_deployment_dba`. Copied the updated
+  `backend_files/` and `frontend_files/` into the
+  `super_kart_model_deployment` checkout as well, updated its README's
+  deployment instructions for the new frontend and the `BACKEND_URL`
+  nuance, and pushed there too.

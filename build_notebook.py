@@ -470,7 +470,7 @@ code(
     "\n"
     "# Store_Age_Years: store age relative to the reference year this dataset was\n"
     "# compiled (2025), computed once and reused everywhere downstream, including\n"
-    "# the deployed API and the Streamlit frontend.\n"
+    "# the deployed API and the frontend.\n"
     "CURRENT_YEAR = 2025\n"
     'df["Store_Age_Years"] = CURRENT_YEAR - df["Store_Establishment_Year"]\n'
     "\n"
@@ -964,7 +964,7 @@ md(
     "- Generate a **Personal Access Token**\n"
     "  - Make sure the token has **repo** scope (full control of private repositories)\n"
     "- The serialized ML model file (`superkart_model.joblib`) should already be present in the `backend_files` folder before pushing to GitHub\n"
-    "- We will deploy **both the Flask backend and the Streamlit frontend as separate Docker containers** inside a GitHub Codespace, and connect them using a **Docker network**"
+    "- We will deploy **both the Flask backend and the Web Components frontend as separate Docker containers** inside a GitHub Codespace, and connect them using a **Docker network**"
 )
 code(
     'os.makedirs("backend_files", exist_ok=True)\n'
@@ -1000,8 +1000,16 @@ import os
 import joblib
 import pandas as pd
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 superkart_api = Flask(__name__)
+
+# The frontend is a static site that calls this API directly from the
+# browser with fetch(), not through a Python server acting on its behalf,
+# so the browser enforces CORS on every request. Wide open here is
+# appropriate for this API: there is no session, cookie, or credential to
+# protect, every response is either a public prediction or an error.
+CORS(superkart_api)
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "superkart_model.joblib")
 model = joblib.load(MODEL_PATH)
@@ -1089,6 +1097,7 @@ code('%%writefile backend_files/app.py\n' + BACKEND_APP_PY)
 
 md("## Dependencies File")
 BACKEND_REQUIREMENTS = """flask==3.0.3
+flask-cors==4.0.1
 pandas==2.2.2
 numpy==2.0.2
 scikit-learn==1.6.1
@@ -1122,213 +1131,1304 @@ code('%%writefile backend_files/Dockerfile\n' + BACKEND_DOCKERFILE)
 # Deployment - Frontend
 # =====================================================================
 md("# **Deployment - Frontend**")
-md("## Streamlit for Interactive UI")
+md("## A Web Components Workflow UI")
 md(
-    "Streamlit builds an interactive web UI in plain Python, no HTML or JavaScript needed. "
-    "Our frontend collects plain business inputs from the user (product type, store "
-    "establishment year, and so on), derives the engineered features the backend model expects "
-    "(`Product_Id_char`, `Store_Age_Years`, `Product_Type_Category`), and calls the Flask API for "
-    "single and batch predictions."
+    "The frontend is a small single page application built with native Web Components "
+    "(Custom Elements plus Shadow DOM), no framework and no build step. Plain browser APIs "
+    "are enough here, and staying framework-free keeps the whole UI inspectable as ordinary "
+    "HTML, CSS, and JavaScript with nothing to compile.\n\n"
+    "Instead of one long form, the UI is a four step wizard: choose a mode (single record or "
+    "batch upload), enter or upload the data, review it, then see the result. A step indicator "
+    "at the top tracks progress, and a history panel on the side keeps a running, session-only "
+    "log of what has been forecast so far. Every step is its own custom element, "
+    "`<app-shell>` is the only piece that knows about all of them, and it talks to each one "
+    "purely through CustomEvents and property assignment, never by reaching into another "
+    "element's internals directly.\n\n"
+    "One architectural point matters here that did not apply to a Python-based frontend: this "
+    "UI calls the Flask API directly from the browser with `fetch()`, not from a server acting "
+    "on the user's behalf. That means the backend URL has to be one the browser itself can "
+    "reach, which is different in every environment:\n"
+    "- No Docker: `http://127.0.0.1:7860`\n"
+    "- Docker on one machine: `http://localhost:7860`, the port published to the host, not the "
+    "Docker network hostname\n"
+    "- GitHub Codespaces: the forwarded URL for the backend's port, only known once that port "
+    "has been made public\n\n"
+    "`env.js` supplies a default for the first two cases and is regenerated from the "
+    "`BACKEND_URL` environment variable when the container starts. A small settings control in "
+    "the header lets the URL be changed at any time and saves the override to the browser's "
+    "local storage, which is what the Codespaces case needs since that URL cannot be known in "
+    "advance. This also means the API needs CORS enabled, since the browser is now the one "
+    "calling it directly rather than a Python process on the same host, handled in the Flask "
+    "backend above."
 )
-
-FRONTEND_APP_PY = '''"""
-Streamlit frontend for the SuperKart sales forecasting solution.
-
-Collects plain business inputs from the user, derives the engineered features
-the backend model expects (Product_Id_char, Store_Age_Years,
-Product_Type_Category), and calls the Flask backend for:
-  - Online inference (a single product-store record)
-  - Batch inference (a CSV file of multiple records)
+md("## index.html")
+FRONTEND_INDEX_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SuperKart Sales Forecasting</title>
+    <link rel="stylesheet" href="src/tokens.css" />
+    <!-- Supplies window.__BACKEND_URL__. Regenerated at container start in
+         Docker from the BACKEND_URL environment variable, see
+         docker-entrypoint.d/40-inject-backend-url.sh -->
+    <script src="env.js"></script>
+  </head>
+  <body>
+    <app-shell></app-shell>
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>
 """
+code('%%writefile frontend_files/index.html\n' + FRONTEND_INDEX_HTML)
+md("## env.js")
+md(
+    "Supplies `window.__BACKEND_URL__` for the checked-in, no-Docker default. "
+    "`docker-entrypoint.d/40-inject-backend-url.sh` further below overwrites this file at "
+    "container start, so this value only matters before that script has ever run."
+)
+FRONTEND_ENV_JS = """// Default backend URL for local development without Docker. When this app
+// runs inside a container, docker-entrypoint.d/40-inject-backend-url.sh
+// overwrites this file at startup from the BACKEND_URL environment
+// variable, so this checked-in default only matters for local, no-Docker
+// use, and for the very first load in any other environment before the
+// header's backend settings panel is used to point it somewhere else.
+window.__BACKEND_URL__ = "http://127.0.0.1:7860";
+"""
+code('%%writefile frontend_files/env.js\n' + FRONTEND_ENV_JS)
+md("## Design Tokens")
+md(
+    "A single stylesheet of CSS custom properties: colors, spacing, radii, shadows, "
+    "typography. Custom properties are one of the few things that cross a Shadow DOM "
+    "boundary by design, so every web component below reads these same tokens even though "
+    "each one's own markup and styling stay fully encapsulated."
+)
+FRONTEND_TOKENS_CSS = """/*
+ * Design tokens for the SuperKart forecasting UI.
+ *
+ * These are plain CSS custom properties defined on :root. Custom properties
+ * are one of the few things that cross a Shadow DOM boundary by design, so
+ * every web component below can read var(--color-primary) and the rest of
+ * these tokens even though its own markup and styling are fully encapsulated.
+ * This file is the single place that defines the visual language: change a
+ * value here and every component picks it up automatically.
+ */
 
-import os
+:root {
+  /* Palette: a clean, neutral corporate dashboard, one accent color */
+  --color-bg: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-border: #e2e5ea;
+  --color-text: #1f2430;
+  --color-text-muted: #667085;
 
-import pandas as pd
-import requests
-import streamlit as st
+  --color-primary: #2f5aa8;
+  --color-primary-dark: #244985;
+  --color-primary-soft: #eaf0fb;
 
-st.set_page_config(page_title="SuperKart Sales Forecast", page_icon=":shopping_trolley:", layout="centered")
+  --color-success: #1f8a4c;
+  --color-success-soft: #e7f6ed;
 
-# ---------------------------------------------------------------------------
-# Reference data used to derive engineered features from plain user inputs.
-# Kept in sync with the feature engineering step in the training notebook.
-# ---------------------------------------------------------------------------
-CURRENT_YEAR = 2025  # reference year used for Store_Age_Years at training time
+  --color-danger: #c4342f;
+  --color-danger-soft: #fbe9e8;
 
-PRODUCT_TYPE_TO_ID_CHAR = {
-    "Baking Goods": "FD", "Breads": "FD", "Breakfast": "FD", "Canned": "FD",
-    "Dairy": "FD", "Frozen Foods": "FD", "Fruits and Vegetables": "FD",
-    "Meat": "FD", "Seafood": "FD", "Snack Foods": "FD", "Starchy Foods": "FD",
-    "Hard Drinks": "DR", "Soft Drinks": "DR",
-    "Health and Hygiene": "NC", "Household": "NC", "Others": "NC",
+  /* Shape and elevation */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 16px rgba(16, 24, 40, 0.10);
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-8: 48px;
 }
-PERISHABLE_TYPES = {"Dairy", "Meat", "Fruits and Vegetables", "Breads", "Breakfast", "Seafood"}
 
-PRODUCT_TYPES = sorted(PRODUCT_TYPE_TO_ID_CHAR.keys())
-SUGAR_CONTENT_OPTIONS = ["Low Sugar", "Regular", "No Sugar"]
-STORE_SIZE_OPTIONS = ["Small", "Medium", "High"]
-CITY_TIER_OPTIONS = ["Tier 1", "Tier 2", "Tier 3"]
-STORE_TYPE_OPTIONS = ["Food Mart", "Supermarket Type1", "Supermarket Type2", "Departmental Store"]
+* {
+  box-sizing: border-box;
+}
 
-FEATURE_COLUMNS = [
-    "Product_Weight", "Product_Sugar_Content", "Product_Allocated_Area", "Product_MRP",
-    "Store_Size", "Store_Location_City_Type", "Store_Type", "Product_Id_char",
-    "Store_Age_Years", "Product_Type_Category",
-]
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--color-bg);
+  font-family: var(--font-sans);
+  color: var(--color-text);
+}
+"""
+code('%%writefile frontend_files/src/tokens.css\n' + FRONTEND_TOKENS_CSS)
+md("## The Application")
+md(
+    "One ES module defines every custom element used by the workflow: the step indicator, "
+    "the mode selection cards, the single record form, the batch upload dropzone, the review "
+    "screen, the results screen, the history panel, the backend URL settings control, and "
+    "`<app-shell>` itself, which owns the wizard state and swaps the right step element into "
+    "view. No bundler, no framework, this file is exactly what ships to the browser."
+)
+FRONTEND_APP_JS = r"""/*
+ * SuperKart Sales Forecasting: workflow frontend.
+ *
+ * A single ES module that defines the whole application as native Web
+ * Components (Custom Elements with Shadow DOM). No build step, no bundler,
+ * no framework, just what a modern browser already provides. Each piece of
+ * the four step wizard is its own custom element, and <app-shell> is the
+ * only piece that knows about all four. It owns the wizard state and swaps
+ * step elements in and out of the DOM. Every step element only ever talks
+ * back to <app-shell> through CustomEvents, it never reaches into its
+ * parent or its siblings directly, which keeps each one easy to read,
+ * change, and reuse on its own.
+ */
 
+// =====================================================================
+// Backend connection
+//
+// The browser calls the Flask API directly, so the base URL has to be one
+// the browser itself can reach. That is different in every environment:
+//   - No Docker: http://127.0.0.1:7860
+//   - Docker on one machine: http://localhost:7860 (the published port)
+//   - GitHub Codespaces: the forwarded URL for the backend's port, which
+//     is only known once the Codespace has started and that port has been
+//     made public
+// env.js supplies a sensible default for the first two cases and is
+// regenerated from the BACKEND_URL environment variable when this runs in
+// a container. The settings panel in the header lets the URL be overridden
+// at any time without rebuilding or redeploying anything, which is what
+// the Codespaces case needs.
+// =====================================================================
+const BACKEND_URL_STORAGE_KEY = "superkart_backend_url";
 
-def derive_engineered_features(product_type: str, store_establishment_year: int) -> dict:
-    """Maps plain business inputs to the engineered features the backend expects."""
-    return {
-        "Product_Id_char": PRODUCT_TYPE_TO_ID_CHAR[product_type],
-        "Store_Age_Years": CURRENT_YEAR - store_establishment_year,
-        "Product_Type_Category": "Perishables" if product_type in PERISHABLE_TYPES else "Non Perishables",
+function getBackendUrl() {
+  const stored = window.localStorage.getItem(BACKEND_URL_STORAGE_KEY);
+  const fallback = window.__BACKEND_URL__ || "http://127.0.0.1:7860";
+  return (stored || fallback).replace(/\/+$/, "");
+}
+
+function setBackendUrl(url) {
+  window.localStorage.setItem(BACKEND_URL_STORAGE_KEY, url.replace(/\/+$/, ""));
+}
+
+// =====================================================================
+// API client
+// =====================================================================
+async function predictSingle(payload) {
+  const response = await fetch(`${getBackendUrl()}/v1/predict`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed with status ${response.status}`);
+  }
+  return data;
+}
+
+async function predictBatch(file) {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  const response = await fetch(`${getBackendUrl()}/v1/predictbatch`, {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed with status ${response.status}`);
+  }
+  return data;
+}
+
+// =====================================================================
+// Reference data: mirrors the feature engineering step from the training
+// notebook exactly, so a plain business input maps to the same columns the
+// serialized model pipeline was trained on.
+// =====================================================================
+const CURRENT_YEAR = 2025;
+
+const PRODUCT_TYPE_TO_ID_CHAR = {
+  "Baking Goods": "FD", "Breads": "FD", "Breakfast": "FD", "Canned": "FD",
+  "Dairy": "FD", "Frozen Foods": "FD", "Fruits and Vegetables": "FD",
+  "Meat": "FD", "Seafood": "FD", "Snack Foods": "FD", "Starchy Foods": "FD",
+  "Hard Drinks": "DR", "Soft Drinks": "DR",
+  "Health and Hygiene": "NC", "Household": "NC", "Others": "NC",
+};
+const PERISHABLE_TYPES = new Set(["Dairy", "Meat", "Fruits and Vegetables", "Breads", "Breakfast", "Seafood"]);
+const PRODUCT_TYPES = Object.keys(PRODUCT_TYPE_TO_ID_CHAR).sort();
+const SUGAR_CONTENT_OPTIONS = ["Low Sugar", "Regular", "No Sugar"];
+const STORE_SIZE_OPTIONS = ["Small", "Medium", "High"];
+const CITY_TIER_OPTIONS = ["Tier 1", "Tier 2", "Tier 3"];
+const STORE_TYPE_OPTIONS = ["Food Mart", "Supermarket Type1", "Supermarket Type2", "Departmental Store"];
+const FEATURE_COLUMNS = [
+  "Product_Weight", "Product_Sugar_Content", "Product_Allocated_Area", "Product_MRP",
+  "Store_Size", "Store_Location_City_Type", "Store_Type", "Product_Id_char",
+  "Store_Age_Years", "Product_Type_Category",
+];
+
+function deriveEngineeredFeatures(productType, storeEstablishmentYear) {
+  return {
+    Product_Id_char: PRODUCT_TYPE_TO_ID_CHAR[productType],
+    Store_Age_Years: CURRENT_YEAR - storeEstablishmentYear,
+    Product_Type_Category: PERISHABLE_TYPES.has(productType) ? "Perishables" : "Non Perishables",
+  };
+}
+
+// =====================================================================
+// A small CSV reader, just enough to preview an uploaded batch file and
+// rebuild the results table client side. A plain comma split is enough
+// here because every column in this dataset is either numeric or a short
+// category with no embedded commas or quoting, a real general-purpose CSV
+// parser would be overkill for this input shape.
+// =====================================================================
+function parseCsv(text, maxDataRows = Infinity) {
+  const lines = text.split(/\r\n|\n/).filter((line) => line.length > 0);
+  const splitLine = (line) => line.split(",").map((cell) => cell.trim());
+  const header = lines.length > 0 ? splitLine(lines[0]) : [];
+  const totalRows = Math.max(lines.length - 1, 0);
+  const rows = lines.slice(1, 1 + Math.min(maxDataRows, totalRows)).map(splitLine);
+  return { header, rows, totalRows };
+}
+
+// =====================================================================
+// Shared stylesheet, adopted by every component below. Buttons, cards,
+// form fields, badges, and tables all look consistent this way without
+// copying the same rules into nine different Shadow DOM style blocks.
+// Constructable stylesheets are built once and reused by reference, which
+// is also cheaper than parsing the same CSS text over and over.
+// =====================================================================
+const sharedSheet = new CSSStyleSheet();
+sharedSheet.replaceSync(`
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: var(--space-5);
+  }
+  .btn {
+    font: inherit;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 10px 20px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: background-color .15s ease, border-color .15s ease, opacity .15s ease;
+  }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+  .btn-primary { background: var(--color-primary); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: var(--color-primary-dark); }
+  .btn-secondary { background: var(--color-surface); color: var(--color-text); border-color: var(--color-border); }
+  .btn-secondary:hover:not(:disabled) { background: var(--color-bg); }
+  .field { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-4); }
+  .field label { font-size: 13px; font-weight: 600; color: var(--color-text-muted); }
+  .field input, .field select {
+    font: inherit;
+    font-size: 14px;
+    padding: 9px 11px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+  .field input:focus, .field select:focus { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+    padding: 3px 10px; border-radius: 999px;
+  }
+  .badge-success { background: var(--color-success-soft); color: var(--color-success); }
+  .badge-primary { background: var(--color-primary-soft); color: var(--color-primary-dark); }
+  table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.data-table th, table.data-table td {
+    padding: 8px 10px; border-bottom: 1px solid var(--color-border);
+    text-align: left; white-space: nowrap;
+  }
+  table.data-table th { color: var(--color-text-muted); font-weight: 600; background: var(--color-bg); position: sticky; top: 0; }
+  .table-wrap { max-height: 300px; overflow: auto; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, .4); border-top-color: #fff;
+    display: inline-block; animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .helper-text { font-size: 12px; color: var(--color-text-muted); }
+  .error-banner {
+    background: var(--color-danger-soft); color: var(--color-danger);
+    border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
+    font-size: 13px; margin-bottom: var(--space-4);
+  }
+`);
+
+function withSharedStyles(shadowRoot) {
+  shadowRoot.adoptedStyleSheets = [sharedSheet];
+}
+
+// =====================================================================
+// <step-indicator current="1..4">
+// Pure presentational. Shows the four wizard stages as numbered circles
+// connected by a line, marking earlier stages complete and the current one
+// active.
+// =====================================================================
+class StepIndicator extends HTMLElement {
+  static STAGES = ["Mode", "Data", "Review", "Results"];
+
+  static get observedAttributes() {
+    return ["current"];
+  }
+
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  attributeChangedCallback() {
+    this._render();
+  }
+
+  get current() {
+    return Number(this.getAttribute("current")) || 1;
+  }
+
+  _render() {
+    withSharedStyles(this.shadowRoot);
+    const current = this.current;
+    const steps = StepIndicator.STAGES.map((label, i) => {
+      const n = i + 1;
+      const state = n < current ? "done" : n === current ? "active" : "";
+      const inner = n < current ? "&#10003;" : String(n);
+      const line = i < StepIndicator.STAGES.length - 1
+        ? `<div class="line ${n < current ? "done" : ""}"></div>`
+        : "";
+      return `<div class="step ${state}"><div class="circle">${inner}</div><div class="label">${label}</div></div>${line}`;
+    }).join("");
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        .wrap { display: flex; align-items: center; }
+        .step { display: flex; align-items: center; gap: 10px; }
+        .circle {
+          width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 13px; font-weight: 700;
+          border: 2px solid var(--color-border); color: var(--color-text-muted);
+          background: var(--color-surface);
+        }
+        .step.done .circle { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+        .step.active .circle { border-color: var(--color-primary); color: var(--color-primary); }
+        .label { font-size: 13px; font-weight: 600; color: var(--color-text-muted); }
+        .step.active .label, .step.done .label { color: var(--color-text); }
+        .line { width: 40px; height: 2px; background: var(--color-border); margin: 0 10px; }
+        .line.done { background: var(--color-primary); }
+      </style>
+      <div class="wrap">${steps}</div>
+    `;
+  }
+}
+customElements.define("step-indicator", StepIndicator);
+
+// =====================================================================
+// <step-mode-select>
+// Step 1. Fires "mode-selected" with { mode: "single" | "batch" }.
+// =====================================================================
+class StepModeSelect extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _render() {
+    withSharedStyles(this.shadowRoot);
+    this.shadowRoot.innerHTML = `
+      <style>
+        h2 { margin-top: 0; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-5); margin-top: var(--space-5); }
+        @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+        .option {
+          all: unset;
+          box-sizing: border-box;
+          display: block;
+          width: 100%;
+          text-align: left;
+          cursor: pointer;
+          background: var(--color-surface);
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-lg);
+          padding: var(--space-6) var(--space-5);
+          box-shadow: var(--shadow-sm);
+          transition: border-color .15s ease, box-shadow .15s ease, transform .1s ease;
+        }
+        .option:hover { border-color: var(--color-primary); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+        .icon { font-size: 32px; margin-bottom: var(--space-3); }
+        h3 { margin: 0 0 var(--space-2) 0; font-size: 17px; }
+        p { margin: 0; font-size: 13px; color: var(--color-text-muted); line-height: 1.5; }
+      </style>
+      <div class="card">
+        <h2>What would you like to forecast?</h2>
+        <p class="helper-text">Choose a mode to get started. You can come back and change this later.</p>
+        <div class="grid">
+          <button type="button" class="option" data-mode="single">
+            <div class="icon">&#128722;</div>
+            <h3>Single Product Forecast</h3>
+            <p>Enter the details of one product at one store and get an instant sales forecast.</p>
+          </button>
+          <button type="button" class="option" data-mode="batch">
+            <div class="icon">&#128230;</div>
+            <h3>Batch Upload</h3>
+            <p>Upload a CSV of multiple product-store records and forecast all of them at once.</p>
+          </button>
+        </div>
+      </div>
+    `;
+
+    this.shadowRoot.querySelectorAll(".option").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.dispatchEvent(new CustomEvent("mode-selected", {
+          detail: { mode: btn.dataset.mode },
+          bubbles: true,
+          composed: true,
+        }));
+      });
+    });
+  }
+}
+customElements.define("step-mode-select", StepModeSelect);
+
+// =====================================================================
+// <step-single-form>
+// Step 2, single record path. Fires "wizard-back" and "data-ready" with
+// { mode: "single", payload, display, formState }.
+// =====================================================================
+class StepSingleForm extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._prior = null;
+  }
+
+  set initialData(value) {
+    this._prior = value;
+    if (this.isConnected) this._render();
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _render() {
+    withSharedStyles(this.shadowRoot);
+    const d = this._prior || {};
+    const opt = (value, selected) => `<option value="${value}" ${value === selected ? "selected" : ""}>${value}</option>`;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        h2 { margin-top: 0; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--space-5); }
+        @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+        .actions { display: flex; justify-content: space-between; margin-top: var(--space-5); }
+      </style>
+      <div class="card">
+        <h2>Product and store details</h2>
+        <div id="error-slot"></div>
+        <form id="single-form">
+          <div class="grid">
+            <div>
+              <div class="field">
+                <label for="productType">Product Type</label>
+                <select id="productType">${PRODUCT_TYPES.map((t) => opt(t, d.productType || "Dairy")).join("")}</select>
+              </div>
+              <div class="field">
+                <label for="productWeight">Product Weight</label>
+                <input id="productWeight" type="number" min="0" step="0.01" value="${d.productWeight ?? 12.66}" required>
+              </div>
+              <div class="field">
+                <label for="sugar">Product Sugar Content</label>
+                <select id="sugar">${SUGAR_CONTENT_OPTIONS.map((s) => opt(s, d.sugar || "Low Sugar")).join("")}</select>
+              </div>
+              <div class="field">
+                <label for="area">Product Allocated Area (fraction of store display area)</label>
+                <input id="area" type="number" min="0" max="1" step="0.001" value="${d.area ?? 0.03}" required>
+              </div>
+              <div class="field">
+                <label for="mrp">Product MRP</label>
+                <input id="mrp" type="number" min="0" step="0.01" value="${d.mrp ?? 117.08}" required>
+              </div>
+            </div>
+            <div>
+              <div class="field">
+                <label for="storeSize">Store Size</label>
+                <select id="storeSize">${STORE_SIZE_OPTIONS.map((s) => opt(s, d.storeSize || "Medium")).join("")}</select>
+              </div>
+              <div class="field">
+                <label for="cityTier">Store Location City Type</label>
+                <select id="cityTier">${CITY_TIER_OPTIONS.map((c) => opt(c, d.cityTier || "Tier 2")).join("")}</select>
+              </div>
+              <div class="field">
+                <label for="storeType">Store Type</label>
+                <select id="storeType">${STORE_TYPE_OPTIONS.map((s) => opt(s, d.storeType || "Supermarket Type2")).join("")}</select>
+              </div>
+              <div class="field">
+                <label for="year">Store Establishment Year</label>
+                <input id="year" type="number" min="1980" max="${CURRENT_YEAR}" step="1" value="${d.year ?? 2009}" required>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn-secondary" id="back-btn">Back</button>
+            <button type="submit" class="btn btn-primary">Review forecast &rarr;</button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    this.shadowRoot.getElementById("back-btn").addEventListener("click", () => {
+      this.dispatchEvent(new CustomEvent("wizard-back", { bubbles: true, composed: true }));
+    });
+
+    this.shadowRoot.getElementById("single-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      this._submit();
+    });
+  }
+
+  _submit() {
+    const $ = (id) => this.shadowRoot.getElementById(id);
+    const productType = $("productType").value;
+    const productWeight = Number($("productWeight").value);
+    const sugar = $("sugar").value;
+    const area = Number($("area").value);
+    const mrp = Number($("mrp").value);
+    const storeSize = $("storeSize").value;
+    const cityTier = $("cityTier").value;
+    const storeType = $("storeType").value;
+    const year = Number($("year").value);
+
+    if ([productWeight, area, mrp, year].some((v) => Number.isNaN(v))) {
+      this.shadowRoot.getElementById("error-slot").innerHTML =
+        `<div class="error-banner">Please fill in every numeric field with a valid number.</div>`;
+      return;
     }
 
+    const engineered = deriveEngineeredFeatures(productType, year);
+    const payload = {
+      Product_Weight: productWeight,
+      Product_Sugar_Content: sugar,
+      Product_Allocated_Area: area,
+      Product_MRP: mrp,
+      Store_Size: storeSize,
+      Store_Location_City_Type: cityTier,
+      Store_Type: storeType,
+      ...engineered,
+    };
 
-# ---------------------------------------------------------------------------
-# Sidebar: backend connection settings
-# ---------------------------------------------------------------------------
-st.sidebar.header("Backend connection")
-# BACKEND_URL can be set at container or process start. Defaults to the
-# Docker network hostname used when both containers run on the same network.
-# Override with "http://127.0.0.1:7860" for a local, non-Docker run.
-default_backend_url = os.environ.get("BACKEND_URL", "http://superkart-backend:7860")
-backend_url = st.sidebar.text_input("Flask API base URL", value=default_backend_url).rstrip("/")
-st.sidebar.caption(
-    "Defaults to the BACKEND_URL environment variable if set. Use the Docker network "
-    "hostname (http://superkart-backend:7860) when both containers share a network, "
-    "http://127.0.0.1:7860 for a local run, or the forwarded Codespace URL from outside."
-)
+    const display = {
+      "Product Type": productType,
+      "Product Weight": productWeight,
+      "Product Sugar Content": sugar,
+      "Product Allocated Area": area,
+      "Product MRP": mrp,
+      "Store Size": storeSize,
+      "Store Location City Type": cityTier,
+      "Store Type": storeType,
+      "Store Establishment Year": year,
+    };
 
-st.title(":shopping_trolley: SuperKart Sales Forecasting")
-st.write(
-    "Forecast the expected total sales revenue of a product at a given SuperKart outlet "
-    "for the upcoming quarter."
-)
+    const formState = { productType, productWeight, sugar, area, mrp, storeSize, cityTier, storeType, year };
 
-tab_single, tab_batch = st.tabs([":small_blue_diamond: Single Prediction", ":package: Batch Prediction"])
+    this.dispatchEvent(new CustomEvent("data-ready", {
+      detail: { mode: "single", payload, display, formState },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+}
+customElements.define("step-single-form", StepSingleForm);
 
-# ---------------------------------------------------------------------------
-# Tab 1: online inference, single record
-# ---------------------------------------------------------------------------
-with tab_single:
-    st.subheader("Enter product and store details")
+// =====================================================================
+// <step-batch-upload>
+// Step 2, batch path. Fires "wizard-back" and "data-ready" with
+// { mode: "batch", file, preview }.
+// =====================================================================
+class StepBatchUpload extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._file = null;
+    this._preview = null;
+  }
 
-    col1, col2 = st.columns(2)
-    with col1:
-        product_type = st.selectbox("Product Type", PRODUCT_TYPES, index=PRODUCT_TYPES.index("Dairy"))
-        product_weight = st.number_input("Product Weight", min_value=0.0, value=12.66, step=0.01)
-        product_sugar_content = st.selectbox("Product Sugar Content", SUGAR_CONTENT_OPTIONS)
-        product_allocated_area = st.number_input(
-            "Product Allocated Area (fraction of total store display area)",
-            min_value=0.0, max_value=1.0, value=0.03, step=0.001, format="%.3f",
-        )
-        product_mrp = st.number_input("Product MRP", min_value=0.0, value=117.08, step=0.01)
-    with col2:
-        store_size = st.selectbox("Store Size", STORE_SIZE_OPTIONS, index=1)
-        store_location_city_type = st.selectbox("Store Location City Type", CITY_TIER_OPTIONS, index=1)
-        store_type = st.selectbox("Store Type", STORE_TYPE_OPTIONS, index=2)
-        store_establishment_year = st.number_input(
-            "Store Establishment Year", min_value=1980, max_value=CURRENT_YEAR, value=2009, step=1,
-        )
+  connectedCallback() {
+    this._render();
+  }
 
-    if st.button("Predict Sales", type="primary"):
-        engineered = derive_engineered_features(product_type, int(store_establishment_year))
-        payload = {
-            "Product_Weight": product_weight,
-            "Product_Sugar_Content": product_sugar_content,
-            "Product_Allocated_Area": product_allocated_area,
-            "Product_MRP": product_mrp,
-            "Store_Size": store_size,
-            "Store_Location_City_Type": store_location_city_type,
-            "Store_Type": store_type,
-            **engineered,
+  _render() {
+    withSharedStyles(this.shadowRoot);
+    this.shadowRoot.innerHTML = `
+      <style>
+        h2 { margin-top: 0; }
+        .dropzone {
+          display: block; box-sizing: border-box;
+          border: 2px dashed var(--color-border); border-radius: var(--radius-md);
+          padding: var(--space-6); text-align: center; cursor: pointer;
+          background: var(--color-bg); transition: border-color .15s ease, background .15s ease;
         }
+        .dropzone.dragging { border-color: var(--color-primary); background: var(--color-primary-soft); }
+        .dropzone p { margin: var(--space-2) 0 0 0; color: var(--color-text-muted); font-size: 13px; }
+        input[type="file"] { display: none; }
+        .file-chip {
+          display: inline-flex; align-items: center; gap: var(--space-2);
+          background: var(--color-primary-soft); color: var(--color-primary-dark);
+          padding: 6px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+          margin: var(--space-4) 0;
+        }
+        .actions { display: flex; justify-content: space-between; margin-top: var(--space-5); }
+      </style>
+      <div class="card">
+        <h2>Upload a CSV for batch forecasting</h2>
+        <p class="helper-text">Required columns: ${FEATURE_COLUMNS.join(", ")}</p>
+        <div id="error-slot"></div>
+        <label class="dropzone" id="dropzone" for="file-input">
+          <div style="font-size:28px;">&#128196;</div>
+          <p><strong>Click to choose a file</strong> or drag and drop a CSV here</p>
+        </label>
+        <input type="file" id="file-input" accept=".csv">
+        <div id="preview-slot"></div>
+        <div class="actions">
+          <button type="button" class="btn btn-secondary" id="back-btn">Back</button>
+          <button type="button" class="btn btn-primary" id="next-btn" disabled>Review forecast &rarr;</button>
+        </div>
+      </div>
+    `;
 
-        with st.spinner("Calling the forecasting API..."):
-            try:
-                response = requests.post(f"{backend_url}/v1/predict", json=payload, timeout=30)
-                response.raise_for_status()
-                result = response.json()
-                st.success(
-                    f"Predicted sales revenue: Rs. {result['Product_Store_Sales_Total_Prediction']:,.2f}"
-                )
-                with st.expander("Request payload sent to the API"):
-                    st.json(payload)
-            except requests.exceptions.RequestException as exc:
-                st.error(f"Could not reach the backend API: {exc}")
+    const dropzone = this.shadowRoot.getElementById("dropzone");
+    const fileInput = this.shadowRoot.getElementById("file-input");
 
-# ---------------------------------------------------------------------------
-# Tab 2: batch inference
-# ---------------------------------------------------------------------------
-with tab_batch:
-    st.subheader("Upload a CSV file for batch forecasting")
-    st.caption("Required columns: " + ", ".join(FEATURE_COLUMNS))
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files[0]) this._handleFile(fileInput.files[0]);
+    });
 
-    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+    ["dragenter", "dragover"].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.add("dragging");
+      })
+    );
+    ["dragleave", "drop"].forEach((evt) =>
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("dragging");
+      })
+    );
+    dropzone.addEventListener("drop", (e) => {
+      const file = e.dataTransfer.files[0];
+      if (file) this._handleFile(file);
+    });
 
-    if uploaded_file is not None:
-        batch_df = pd.read_csv(uploaded_file)
-        st.write("Preview of uploaded data:")
-        st.dataframe(batch_df.head())
+    this.shadowRoot.getElementById("back-btn").addEventListener("click", () => {
+      this.dispatchEvent(new CustomEvent("wizard-back", { bubbles: true, composed: true }));
+    });
 
-        if st.button("Run Batch Prediction", type="primary"):
-            uploaded_file.seek(0)
-            with st.spinner("Calling the forecasting API..."):
-                try:
-                    files = {"file": ("batch.csv", uploaded_file.getvalue(), "text/csv")}
-                    response = requests.post(f"{backend_url}/v1/predictbatch", files=files, timeout=60)
-                    response.raise_for_status()
-                    predictions = response.json()
+    this.shadowRoot.getElementById("next-btn").addEventListener("click", () => {
+      if (!this._file) return;
+      this.dispatchEvent(new CustomEvent("data-ready", {
+        detail: { mode: "batch", file: this._file, preview: this._preview },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+  }
 
-                    result_df = batch_df.copy()
-                    result_df["Predicted_Product_Store_Sales_Total"] = [
-                        predictions[str(i)] for i in range(len(result_df))
-                    ]
-                    st.success(f"Forecasted sales for {len(result_df)} records.")
-                    st.dataframe(result_df)
+  async _handleFile(file) {
+    const errorSlot = this.shadowRoot.getElementById("error-slot");
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      errorSlot.innerHTML = `<div class="error-banner">Please choose a .csv file.</div>`;
+      return;
+    }
 
-                    csv_bytes = result_df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        "Download predictions as CSV",
-                        data=csv_bytes,
-                        file_name="superkart_predictions.csv",
-                        mime="text/csv",
-                    )
-                except requests.exceptions.RequestException as exc:
-                    st.error(f"Could not reach the backend API: {exc}")
-'''
+    this._file = file;
+    const text = await file.text();
+    this._preview = parseCsv(text, 5);
 
-code('%%writefile frontend_files/app.py\n' + FRONTEND_APP_PY)
+    const missing = FEATURE_COLUMNS.filter((c) => !this._preview.header.includes(c));
+    errorSlot.innerHTML = missing.length
+      ? `<div class="error-banner">Missing column(s) in this file: ${missing.join(", ")}. The backend will reject this file until they are added.</div>`
+      : "";
 
-md("## Dependencies File")
-FRONTEND_REQUIREMENTS = """streamlit==1.38.0
-pandas==2.2.2
-requests==2.32.4
+    const previewSlot = this.shadowRoot.getElementById("preview-slot");
+    previewSlot.innerHTML = `
+      <div class="file-chip">&#128206; ${file.name} &middot; ${this._preview.totalRows} row(s)</div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr>${this._preview.header.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+          <tbody>${this._preview.rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table>
+      </div>
+    `;
+
+    this.shadowRoot.getElementById("next-btn").disabled = missing.length > 0;
+  }
+}
+customElements.define("step-batch-upload", StepBatchUpload);
+
+// =====================================================================
+// <step-review>
+// Step 3. Properties: data, submitting, error.
+// Fires "wizard-back" and "submit-requested".
+// =====================================================================
+class StepReview extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._data = null;
+    this._submitting = false;
+    this._error = null;
+  }
+
+  set data(value) {
+    this._data = value;
+    this._render();
+  }
+
+  set submitting(value) {
+    this._submitting = value;
+    this._render();
+  }
+
+  set error(value) {
+    this._error = value;
+    this._render();
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _render() {
+    if (!this._data) return;
+    withSharedStyles(this.shadowRoot);
+
+    const body = this._data.mode === "single"
+      ? `
+        <dl class="summary">
+          ${Object.entries(this._data.display).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}
+        </dl>
+      `
+      : `
+        <p>
+          <strong>${this._data.file.name}</strong> &middot;
+          ${this._data.preview.totalRows} row(s) will be sent for batch forecasting.
+        </p>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr>${this._data.preview.header.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+            <tbody>${this._data.preview.rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody>
+          </table>
+        </div>
+      `;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        h2 { margin-top: 0; }
+        dl.summary { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; }
+        dl.summary dt { color: var(--color-text-muted); font-size: 13px; }
+        dl.summary dd { margin: 0; font-size: 13px; font-weight: 600; }
+        .actions { display: flex; justify-content: space-between; margin-top: var(--space-5); }
+      </style>
+      <div class="card">
+        <h2>Review before submitting</h2>
+        ${this._error ? `<div class="error-banner">${this._error}</div>` : ""}
+        ${body}
+        <div class="actions">
+          <button type="button" class="btn btn-secondary" id="back-btn" ${this._submitting ? "disabled" : ""}>Back to edit</button>
+          <button type="button" class="btn btn-primary" id="submit-btn" ${this._submitting ? "disabled" : ""}>
+            ${this._submitting ? `<span class="spinner"></span> Forecasting...` : "Submit for forecast"}
+          </button>
+        </div>
+      </div>
+    `;
+
+    this.shadowRoot.getElementById("back-btn").addEventListener("click", () => {
+      this.dispatchEvent(new CustomEvent("wizard-back", { bubbles: true, composed: true }));
+    });
+    this.shadowRoot.getElementById("submit-btn").addEventListener("click", () => {
+      this.dispatchEvent(new CustomEvent("submit-requested", { bubbles: true, composed: true }));
+    });
+  }
+}
+customElements.define("step-review", StepReview);
+
+// =====================================================================
+// <step-results>
+// Step 4. Property: results, either
+//   { mode: "single", singlePrediction }
+//   { mode: "batch", batchRows }
+// Fires "wizard-restart".
+// =====================================================================
+class StepResults extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._results = null;
+  }
+
+  set results(value) {
+    this._results = value;
+    this._render();
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _render() {
+    if (!this._results) return;
+    withSharedStyles(this.shadowRoot);
+    const r = this._results;
+
+    const body = r.mode === "single"
+      ? `
+        <div class="result-hero">
+          <div class="result-label">Predicted total sales revenue</div>
+          <div class="result-value">Rs. ${r.singlePrediction.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+      `
+      : `
+        <p>Forecasted sales for <strong>${r.batchRows.length}</strong> record(s).</p>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr>${Object.keys(r.batchRows[0]).map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+            <tbody>${r.batchRows.map((row) => `<tr>${Object.values(row).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody>
+          </table>
+        </div>
+        <button type="button" class="btn btn-secondary" id="download-btn" style="margin-top: var(--space-4);">Download predictions as CSV</button>
+      `;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        h2 { margin-top: 0; }
+        .result-hero { text-align: center; padding: var(--space-6) 0; }
+        .result-label { font-size: 13px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .04em; }
+        .result-value { font-size: 40px; font-weight: 800; color: var(--color-success); margin-top: var(--space-2); }
+        .actions { display: flex; justify-content: flex-end; margin-top: var(--space-5); }
+      </style>
+      <div class="card">
+        <h2>Forecast results</h2>
+        ${body}
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="restart-btn">Start a new forecast</button>
+        </div>
+      </div>
+    `;
+
+    this.shadowRoot.getElementById("restart-btn").addEventListener("click", () => {
+      this.dispatchEvent(new CustomEvent("wizard-restart", { bubbles: true, composed: true }));
+    });
+
+    const downloadBtn = this.shadowRoot.getElementById("download-btn");
+    if (downloadBtn) {
+      downloadBtn.addEventListener("click", () => {
+        const header = Object.keys(r.batchRows[0]);
+        const lines = [header.join(",")].concat(
+          r.batchRows.map((row) => header.map((h) => row[h]).join(","))
+        );
+        const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "superkart_predictions.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    }
+  }
+}
+customElements.define("step-results", StepResults);
+
+// =====================================================================
+// <history-panel>
+// Property: items, an array of { time, mode, summary, resultSummary },
+// newest first. Purely a session-scoped, in-memory log, nothing is
+// persisted or sent anywhere, it just gives the workflow a sense of place.
+// =====================================================================
+class HistoryPanel extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._items = [];
+  }
+
+  set items(value) {
+    this._items = value || [];
+    this._render();
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _render() {
+    withSharedStyles(this.shadowRoot);
+    const rows = this._items.length
+      ? this._items.map((item) => `
+          <li>
+            <div class="row-top">
+              <span class="badge ${item.mode === "single" ? "badge-success" : "badge-primary"}">${item.mode}</span>
+              <span class="time">${item.time}</span>
+            </div>
+            <div class="summary">${item.summary}</div>
+            <div class="result">${item.resultSummary}</div>
+          </li>
+        `).join("")
+      : `<li class="empty">No predictions yet this session.</li>`;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        h3 { margin: 0 0 var(--space-3) 0; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-muted); }
+        ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); max-height: 480px; overflow: auto; }
+        li { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-3); background: var(--color-surface); }
+        li.empty { color: var(--color-text-muted); font-size: 13px; text-align: center; border-style: dashed; }
+        .row-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .time { font-size: 11px; color: var(--color-text-muted); }
+        .summary { font-size: 12px; color: var(--color-text-muted); margin-bottom: 4px; }
+        .result { font-size: 13px; font-weight: 700; }
+      </style>
+      <div class="card">
+        <h3>Recent predictions</h3>
+        <ul>${rows}</ul>
+      </div>
+    `;
+  }
+}
+customElements.define("history-panel", HistoryPanel);
+
+// =====================================================================
+// <backend-settings>
+// A small header control showing the current backend URL, with an inline
+// editor that saves an override to localStorage so it survives a reload.
+// =====================================================================
+class BackendSettings extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._open = false;
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _render() {
+    withSharedStyles(this.shadowRoot);
+    const url = getBackendUrl();
+    this.shadowRoot.innerHTML = `
+      <style>
+        .wrap { position: relative; font-size: 12px; }
+        .toggle {
+          font: inherit; background: none; border: 1px solid var(--color-border);
+          border-radius: 999px; padding: 6px 14px; cursor: pointer; color: var(--color-text-muted);
+        }
+        .toggle:hover { border-color: var(--color-primary); color: var(--color-primary); }
+        .panel {
+          position: absolute; right: 0; top: calc(100% + 8px); width: 320px;
+          background: var(--color-surface); border: 1px solid var(--color-border);
+          border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: var(--space-4);
+          z-index: 20; display: ${this._open ? "block" : "none"};
+        }
+        .panel .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: var(--space-3); }
+      </style>
+      <div class="wrap">
+        <button type="button" class="toggle" id="toggle-btn">&#9881; Backend: ${url}</button>
+        <div class="panel">
+          <div class="field">
+            <label for="url-input">Flask API base URL</label>
+            <input type="text" id="url-input" value="${url}">
+          </div>
+          <p class="helper-text">
+            Use http://127.0.0.1:7860 for a local run without Docker, the published port
+            (http://localhost:7860) for a local Docker run, or the forwarded Codespace URL
+            for the backend once its port is public.
+          </p>
+          <div class="actions">
+            <button type="button" class="btn btn-secondary" id="cancel-btn">Cancel</button>
+            <button type="button" class="btn btn-primary" id="save-btn">Save</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.shadowRoot.getElementById("toggle-btn").addEventListener("click", () => {
+      this._open = !this._open;
+      this._render();
+    });
+    this.shadowRoot.getElementById("cancel-btn").addEventListener("click", () => {
+      this._open = false;
+      this._render();
+    });
+    this.shadowRoot.getElementById("save-btn").addEventListener("click", () => {
+      const value = this.shadowRoot.getElementById("url-input").value.trim();
+      if (value) setBackendUrl(value);
+      this._open = false;
+      this._render();
+    });
+  }
+}
+customElements.define("backend-settings", BackendSettings);
+
+// =====================================================================
+// <app-shell>
+// The controller. Owns the wizard state and renders exactly one step
+// element into #content at a time, based on that state. All communication
+// with step elements happens through CustomEvents bubbling up through the
+// Shadow DOM (composed: true lets them cross the boundary) or through
+// plain property assignment when handing data down.
+// =====================================================================
+class AppShell extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this.state = {
+      step: 1,
+      mode: null,
+      singleFormState: null,
+      pendingData: null,
+      results: null,
+      submitting: false,
+      submitError: null,
+      history: [],
+    };
+  }
+
+  connectedCallback() {
+    this._buildSkeleton();
+    this.shadowRoot.addEventListener("mode-selected", (e) => this._onModeSelected(e.detail.mode));
+    this.shadowRoot.addEventListener("data-ready", (e) => this._onDataReady(e.detail));
+    this.shadowRoot.addEventListener("wizard-back", () => this._goBack());
+    this.shadowRoot.addEventListener("submit-requested", () => this._onSubmit());
+    this.shadowRoot.addEventListener("wizard-restart", () => this._reset());
+    this._renderStep();
+  }
+
+  _buildSkeleton() {
+    withSharedStyles(this.shadowRoot);
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; }
+        header {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: var(--space-4) var(--space-6); background: var(--color-surface);
+          border-bottom: 1px solid var(--color-border);
+        }
+        .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17px; }
+        main {
+          max-width: 1100px; margin: 0 auto; padding: var(--space-6);
+          display: grid; grid-template-columns: 1fr 300px; gap: var(--space-6);
+          align-items: start;
+        }
+        @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+        .indicator-row { display: flex; justify-content: center; margin-bottom: var(--space-6); }
+      </style>
+      <header>
+        <div class="brand">&#128722; SuperKart Sales Forecasting</div>
+        <backend-settings></backend-settings>
+      </header>
+      <main>
+        <div>
+          <div class="indicator-row"><step-indicator current="1"></step-indicator></div>
+          <div id="content"></div>
+        </div>
+        <history-panel></history-panel>
+      </main>
+    `;
+    this._stepIndicator = this.shadowRoot.querySelector("step-indicator");
+    this._historyPanel = this.shadowRoot.querySelector("history-panel");
+    this._content = this.shadowRoot.getElementById("content");
+  }
+
+  _renderStep() {
+    this._stepIndicator.setAttribute("current", String(this.state.step));
+    this._historyPanel.items = this.state.history;
+    this._content.innerHTML = "";
+
+    let el;
+    if (this.state.step === 1) {
+      el = document.createElement("step-mode-select");
+    } else if (this.state.step === 2) {
+      el = document.createElement(this.state.mode === "single" ? "step-single-form" : "step-batch-upload");
+      if (this.state.mode === "single" && this.state.singleFormState) {
+        el.initialData = this.state.singleFormState;
+      }
+    } else if (this.state.step === 3) {
+      el = document.createElement("step-review");
+      el.data = this.state.pendingData;
+      el.submitting = this.state.submitting;
+      el.error = this.state.submitError;
+    } else {
+      el = document.createElement("step-results");
+      el.results = this.state.results;
+    }
+    this._content.appendChild(el);
+  }
+
+  _onModeSelected(mode) {
+    this.state.mode = mode;
+    this.state.step = 2;
+    this._renderStep();
+  }
+
+  _onDataReady(detail) {
+    this.state.pendingData = detail;
+    if (detail.mode === "single") this.state.singleFormState = detail.formState;
+    this.state.submitError = null;
+    this.state.step = 3;
+    this._renderStep();
+  }
+
+  _goBack() {
+    if (this.state.step > 1) {
+      this.state.step -= 1;
+      this.state.submitError = null;
+      this._renderStep();
+    }
+  }
+
+  async _onSubmit() {
+    this.state.submitting = true;
+    this.state.submitError = null;
+    this._renderStep();
+
+    try {
+      const data = this.state.pendingData;
+      if (data.mode === "single") {
+        const result = await predictSingle(data.payload);
+        const prediction = result.Product_Store_Sales_Total_Prediction;
+        this.state.results = { mode: "single", singlePrediction: prediction };
+        this._pushHistory({
+          mode: "single",
+          summary: `${data.display["Product Type"]} at a ${data.display["Store Size"]} store`,
+          resultSummary: `Rs. ${prediction.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        });
+      } else {
+        const predictions = await predictBatch(data.file);
+        const text = await data.file.text();
+        const full = parseCsv(text);
+        const batchRows = full.rows.map((row, idx) => {
+          const obj = {};
+          full.header.forEach((h, i) => { obj[h] = row[i]; });
+          obj["Predicted_Product_Store_Sales_Total"] = predictions[String(idx)];
+          return obj;
+        });
+        this.state.results = { mode: "batch", batchRows };
+        this._pushHistory({
+          mode: "batch",
+          summary: data.file.name,
+          resultSummary: `${batchRows.length} record(s) forecasted`,
+        });
+      }
+      this.state.submitting = false;
+      this.state.step = 4;
+    } catch (err) {
+      this.state.submitting = false;
+      this.state.submitError = err.message || "Could not reach the backend API.";
+    }
+    this._renderStep();
+  }
+
+  _pushHistory(entry) {
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    this.state.history = [{ ...entry, time }, ...this.state.history].slice(0, 20);
+  }
+
+  _reset() {
+    this.state = {
+      step: 1,
+      mode: null,
+      singleFormState: null,
+      pendingData: null,
+      results: null,
+      submitting: false,
+      submitError: null,
+      history: this.state.history,
+    };
+    this._renderStep();
+  }
+}
+customElements.define("app-shell", AppShell);
 """
-code('%%writefile frontend_files/requirements.txt\n' + FRONTEND_REQUIREMENTS)
-
+code('%%writefile frontend_files/src/app.js\n' + FRONTEND_APP_JS)
 md("## Dockerfile")
-FRONTEND_DOCKERFILE = """FROM python:3.11-slim
+FRONTEND_DOCKERFILE = """# Static Web Components frontend for the SuperKart sales forecasting UI.
+# No Node build step involved: plain HTML, CSS, and a single ES module,
+# served exactly as written by Nginx.
+FROM nginx:1.27-alpine
 
-WORKDIR /app
+COPY index.html /usr/share/nginx/html/index.html
+COPY env.js /usr/share/nginx/html/env.js
+COPY src/ /usr/share/nginx/html/src/
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker-entrypoint.d/40-inject-backend-url.sh /docker-entrypoint.d/40-inject-backend-url.sh
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY app.py .
+RUN chmod +x /docker-entrypoint.d/40-inject-backend-url.sh
 
 EXPOSE 8501
 
-# Default backend hostname when running on a shared Docker network with the
-# backend container aliased as superkart-backend. Override with
-# docker run -e BACKEND_URL=... for a different setup.
+# BACKEND_URL is read by 40-inject-backend-url.sh at container start, not
+# at build time, so the same image works with the Docker network hostname
+# below, http://localhost:7860 for a local run, or a forwarded Codespace
+# URL, just by passing a different value to `docker run -e BACKEND_URL=...`.
 ENV BACKEND_URL="http://superkart-backend:7860"
-
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
 """
 code('%%writefile frontend_files/Dockerfile\n' + FRONTEND_DOCKERFILE)
+md("## Nginx Configuration")
+FRONTEND_NGINX_CONF = """server {
+    listen 8501;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # env.js is regenerated on every container start, so it must never be
+    # served from a cache, otherwise the browser could keep pointing at a
+    # stale backend URL after a redeploy.
+    location = /env.js {
+        add_header Cache-Control "no-store";
+    }
+}
+"""
+code('%%writefile frontend_files/nginx.conf\n' + FRONTEND_NGINX_CONF)
+md("## Runtime Backend URL Injection")
+md(
+    "This script runs inside the Nginx container on every start, courtesy of the official "
+    "image's convention of executing anything under `/docker-entrypoint.d/` before Nginx "
+    "itself comes up. It is written below with an explicit LF newline rather than the "
+    "`%%writefile` magic used for every other file in this notebook, because this script runs "
+    "inside a Linux container. A Windows text-mode write translates every newline to CRLF, and "
+    "a CRLF sitting right after the `#!/bin/sh` line stops the container from starting the "
+    "script at all."
+)
+code('FRONTEND_ENTRYPOINT_SH = """#!/bin/sh\n# Regenerates env.js from the BACKEND_URL environment variable every time\n# the container starts. The official Nginx image runs any executable\n# script under /docker-entrypoint.d/ before Nginx itself starts, so this\n# needs no custom ENTRYPOINT of its own.\n#\n# The same image can therefore point at a different backend in every\n# environment (a Docker network hostname when both containers share a\n# network, or a forwarded Codespace URL) without ever being rebuilt.\nset -e\n\nBACKEND_URL="${BACKEND_URL:-http://superkart-backend:7860}"\n\ncat > /usr/share/nginx/html/env.js <<EOF\nwindow.__BACKEND_URL__ = "${BACKEND_URL}";\nEOF\n"""\n\nos.makedirs(os.path.join("frontend_files", "docker-entrypoint.d"), exist_ok=True)\n\nwith open(\n    os.path.join("frontend_files", "docker-entrypoint.d", "40-inject-backend-url.sh"),\n    "w", encoding="utf-8", newline="\\n",\n) as f:\n    f.write(FRONTEND_ENTRYPOINT_SH)\n\nprint("Wrote frontend_files/docker-entrypoint.d/40-inject-backend-url.sh")')
+
 
 # =====================================================================
 # Local Smoke Test (pre-deployment validation)
@@ -1421,20 +2521,19 @@ md(
     "stop it with `Ctrl+C`.\n\n"
     "**Terminal 2, frontend:**\n"
     "```bash\n"
-    "# Windows PowerShell\n"
-    '$env:BACKEND_URL = "http://127.0.0.1:7860"\n'
-    "streamlit run frontend_files/app.py\n"
-    "\n"
-    "# macOS / Linux\n"
-    'BACKEND_URL="http://127.0.0.1:7860" streamlit run frontend_files/app.py\n'
+    "cd frontend_files\n"
+    "python -m http.server 8501\n"
     "```\n"
-    "Streamlit opens `http://localhost:8501` in your browser automatically. The `BACKEND_URL` "
-    "environment variable overrides the app's default, which otherwise assumes the Docker network "
-    "hostname `superkart-backend` and would not resolve outside a container.\n\n"
-    "Both apps read `requirements.txt` in their own folder for their dependency list, so a plain "
-    "`pip install -r backend_files/requirements.txt` (and the same for `frontend_files`) in your "
-    "active Python environment is all that is needed before running the commands above. No "
-    "Docker, no Codespace, no separate configuration file."
+    "This works because `frontend_files/env.js` already defaults to `http://127.0.0.1:7860`, "
+    "the address the backend above is listening on. Open `http://localhost:8501` in a browser "
+    "and the UI is ready to use immediately, no environment variable needed for this case. If a "
+    "different backend address is ever needed, the gear icon in the app's header opens a small "
+    "panel to change it without restarting anything.\n\n"
+    "The backend reads `backend_files/requirements.txt` for its dependency list, so a plain "
+    "`pip install -r backend_files/requirements.txt` in your active Python environment is all "
+    "that is needed before running the commands above. The frontend has no Python dependencies "
+    "at all, it is static HTML, CSS, and JavaScript, `python -m http.server` is only acting as a "
+    "plain file server here."
 )
 
 # =====================================================================
@@ -1442,11 +2541,18 @@ md(
 # =====================================================================
 md("# **Docker Deployment (Local Validation)**")
 md(
-    "With Docker available locally, we build both images from the Dockerfiles above, run them on "
-    "a shared Docker network the same way they will run inside a GitHub Codespace, and confirm "
-    "the frontend can actually reach the backend by its container name rather than localhost. "
-    "This is the same setup described in the README, just run once here to prove it works before "
-    "handing it off to a Codespace.\n\n"
+    "With Docker available locally, we build both images from the Dockerfiles above and run them "
+    "on a shared Docker network the same way they will run inside a GitHub Codespace. This is the "
+    "same setup described in the README, just run once here to prove it works before handing it "
+    "off to a Codespace.\n\n"
+    "The frontend container is started with `BACKEND_URL` pointed at `http://127.0.0.1:7860`, not "
+    "the Docker network hostname `superkart-backend` that the image defaults to. That default "
+    "hostname only resolves from inside the Docker network, between containers, a real browser "
+    "opening `http://localhost:8501` on this machine sits outside that network entirely and needs "
+    "the backend's port as published to the host instead. A GitHub Codespace deployment needs a "
+    "third value again, the forwarded URL for the backend's port, since there the browser is not "
+    "even on the same machine, that gets set the same way, with `-e BACKEND_URL=...` at container "
+    "start, once the backend's port has been made public.\n\n"
     "The cell below checks for a working Docker installation first and skips cleanly with a "
     "message if Docker is not present, so this section does not break the notebook when run in an "
     "environment without Docker (for example, plain Google Colab)."
@@ -1498,10 +2604,14 @@ code(
     "    )\n"
     "    run_cmd(\n"
     '        "docker run -d --name superkart-frontend --network superkart-network "\n'
-    '        "-p 8501:8501 superkart-frontend"\n'
+    '        \'-p 8501:8501 -e BACKEND_URL="http://127.0.0.1:7860" superkart-frontend\'\n'
     "    )\n"
     "    time.sleep(6)  # give both containers a moment to finish starting\n"
-    '    run_cmd("docker ps --filter name=superkart")'
+    '    run_cmd("docker ps --filter name=superkart")\n'
+    "\n"
+    "    # Confirms the entrypoint script actually regenerated env.js with the\n"
+    "    # override above, instead of the image's Docker-network-only default\n"
+    '    run_cmd("docker exec superkart-frontend cat /usr/share/nginx/html/env.js")'
 )
 code(
     "if docker_available:\n"
@@ -1519,21 +2629,29 @@ code(
     '    print("Backend container health check:", backend_health.status_code)\n'
     "    print(backend_health.json())\n"
     "\n"
+    "    # This is what the browser itself does: a POST with an Origin header set\n"
+    "    # to the frontend's own address. A missing or mismatched\n"
+    "    # Access-Control-Allow-Origin in the response is exactly the failure a\n"
+    "    # real browser would block silently, catching it here is cheaper.\n"
     "    container_predict = requests.post(\n"
-    '        "http://127.0.0.1:7860/v1/predict", json=smoke_test_payload, timeout=10\n'
+    '        "http://127.0.0.1:7860/v1/predict",\n'
+    "        json=smoke_test_payload,\n"
+    '        headers={"Origin": "http://127.0.0.1:8501"},\n'
+    "        timeout=10,\n"
     "    )\n"
     '    print("\\nBackend container prediction:", container_predict.status_code)\n'
     "    print(container_predict.json())\n"
+    '    print("CORS header present:", "Access-Control-Allow-Origin" in container_predict.headers)\n'
     "\n"
     "    frontend_health = requests.get(\"http://127.0.0.1:8501\", timeout=10)\n"
     '    print("\\nFrontend container reachable:", frontend_health.status_code == 200)'
 )
 md(
     "If the cell above ran, both containers came up, the backend answered a real prediction "
-    "request over the port mapped to the host, and the frontend served its page. The frontend "
-    "reaches the backend over the Docker network using the hostname `superkart-backend`, exactly "
-    "as it will inside the Codespace. At this point you can also open `http://localhost:8501` in "
-    "a browser and use the app directly."
+    "request with the CORS header a browser checks for, and the frontend served its page with "
+    "`env.js` pointing at the backend's published port rather than its internal Docker hostname. "
+    "At this point `http://localhost:8501` can be opened in a real browser and used directly, "
+    "the same way a person will use it once this is running inside a Codespace."
 )
 code(
     "if docker_available:\n"
@@ -1550,7 +2668,7 @@ code(
 md("# **Pushing Deployment Files to GitHub**")
 md(
     "The cell below stages, commits, and pushes `backend_files/` and `frontend_files/` "
-    "(Flask API, Streamlit app, and their `requirements.txt`/`Dockerfile`) to this project's "
+    "(Flask API, Web Components app, and their `requirements.txt`/`Dockerfile`) to this project's "
     "repository, from which they get built and run as containers inside a GitHub Codespace.\n\n"
     "If you are adapting this notebook for a different repository, change `REPO_URL` below and "
     "make sure `git` is configured with push access (a Personal Access Token stored in a "
@@ -1581,7 +2699,7 @@ code(
     '    git(f"git remote add origin {REPO_URL}")\n'
     "\n"
     'git("git add backend_files frontend_files")\n'
-    'git(\'git commit -m "Add SuperKart Flask backend and Streamlit frontend deployment files"\')\n'
+    'git(\'git commit -m "Add SuperKart Flask backend and Web Components frontend deployment files"\')\n'
     'git("git branch -M main")\n'
     'git("git push -u origin main")'
 )

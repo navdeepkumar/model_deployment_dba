@@ -1,0 +1,9 @@
+# Normalizes line endings to LF for text and web assets, regardless of the
+# platform a contributor commits from. Several of these files run or get
+# parsed inside Linux containers (the shell script most strictly, a shebang
+# line saved with CRLF simply fails to execute there).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.joblib binary

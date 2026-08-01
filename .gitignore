@@ -5,7 +5,8 @@ __pycache__/
 explore.py
 explore2.py
 *.log
-*.html
+# Only the notebook's own exported HTML copy, not frontend_files/index.html
+/Full_Code_SuperKart_Model_Deployment_Notebook.html
 .DS_Store
 backend_pid.txt
 frontend_pid.txt
