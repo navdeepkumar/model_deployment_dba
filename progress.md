@@ -510,3 +510,22 @@ Changes, all in `StepSingleForm` inside `frontend_files/src/app.js`:
   cells), re-executed end to end, 0 errors, Docker validation still passes.
   Committed and pushed to `model_deployment_dba`, then synced the same
   `frontend_files/` into `super_kart_model_deployment` and pushed there.
+
+### 8. Replaced the 0 to 1 fraction with a percentage slider
+The user pointed out that asking a general user to type "0.03" for
+"Product Allocated Area" is not intuitive, most people do not think in
+fractions of a store's display area. Replaced the plain number input with
+a paired range slider and a precise percentage number box, either one
+updates the other. The model still trains and predicts on the 0 to 1
+fraction, the UI only changes how that same value is presented and
+entered, dividing by 100 right before it goes into the API payload.
+Added a matching range check (0% to 100%), and updated the review
+screen's summary to show "7.5%" style text instead of the raw fraction.
+
+Verified with Playwright: default value shows as 3%, arrow keys on the
+slider move the number box in lockstep, typing 7.5 into the number box
+moves the slider to the matching position, and the value flows through
+review and a real prediction correctly. Re-embedded into
+`build_notebook.py`, rebuilt (241 cells), re-executed end to end with 0
+errors, and pushed to both `model_deployment_dba` and
+`super_kart_model_deployment`.
