@@ -964,13 +964,14 @@ md(
     "- Generate a **Personal Access Token**\n"
     "  - Make sure the token has **repo** scope (full control of private repositories)\n"
     "- The serialized ML model file (`superkart_model.joblib`) should already be present in the `backend_files` folder before pushing to GitHub\n"
-    "- We will deploy **both the Flask backend and the Web Components frontend as separate Docker containers** inside a GitHub Codespace, and connect them using a **Docker network**"
+    "- We will deploy **the Flask backend and both frontends, Web Components and Streamlit, as separate Docker containers** inside a GitHub Codespace, and connect them using a **Docker network**"
 )
 code(
     'os.makedirs("backend_files", exist_ok=True)\n'
     'os.makedirs("frontend_files", exist_ok=True)\n'
+    'os.makedirs("frontend_streamlit", exist_ok=True)\n'
     "\n"
-    'print("backend_files/ and frontend_files/ ready.")'
+    'print("backend_files/, frontend_files/, and frontend_streamlit/ ready.")'
 )
 
 md("## Flask Web Framework")
@@ -1325,6 +1326,11 @@ code('%%writefile backend_files/Dockerfile\n' + BACKEND_DOCKERFILE)
 # Deployment - Frontend
 # =====================================================================
 md("# **Deployment - Frontend**")
+md(
+    "Two separate frontends are built here, a Web Components workflow app described first, and "
+    "a Streamlit app further below. Both are thin clients over the same Flask backend, and "
+    "either one can be run on its own."
+)
 md("## A Web Components Workflow UI")
 md(
     "The frontend is a small single page application built with native Web Components "
@@ -3346,6 +3352,274 @@ md(
 )
 code('FRONTEND_ENTRYPOINT_SH = """#!/bin/sh\n# Regenerates env.js from the BACKEND_URL environment variable every time\n# the container starts. The official Nginx image runs any executable\n# script under /docker-entrypoint.d/ before Nginx itself starts, so this\n# needs no custom ENTRYPOINT of its own.\n#\n# The same image can therefore point at a different backend in every\n# environment (a Docker network hostname when both containers share a\n# network, or a forwarded Codespace URL) without ever being rebuilt.\nset -e\n\nBACKEND_URL="${BACKEND_URL:-http://superkart-backend:7860}"\n\ncat > /usr/share/nginx/html/env.js <<EOF\nwindow.__BACKEND_URL__ = "${BACKEND_URL}";\nEOF\n"""\n\nos.makedirs(os.path.join("frontend_files", "docker-entrypoint.d"), exist_ok=True)\n\nwith open(\n    os.path.join("frontend_files", "docker-entrypoint.d", "40-inject-backend-url.sh"),\n    "w", encoding="utf-8", newline="\\n",\n) as f:\n    f.write(FRONTEND_ENTRYPOINT_SH)\n\nprint("Wrote frontend_files/docker-entrypoint.d/40-inject-backend-url.sh")')
 
+md("## A Second, Parallel UI Built with Streamlit")
+md(
+    "Some review checklists call for a Streamlit frontend specifically. Rather than choosing "
+    "one UI over the other, this project keeps both running side by side. `frontend_streamlit/"
+    "app.py` is a second, independent client for the exact same Flask backend, single "
+    "prediction, batch prediction from a CSV upload, and a history tab reading `GET /v1/"
+    "history`, with a Clear history action wired to `DELETE /v1/history`. Because both frontends "
+    "talk to the same backend and the same SQLite history file, a forecast made from either one "
+    "shows up in both.\n\n"
+    "It ships as its own Docker image, on its own port, with no dependency on the Web "
+    "Components app, the two can be deployed side by side without either one needing the other. "
+    "The Product Allocated Area field is a percentage slider here too, for the same reason it is "
+    "one in the Web Components form, a raw 0 to 1 fraction is not an intuitive unit for a person "
+    "filling in a form."
+)
+FRONTEND_STREAMLIT_APP_PY = '''"""
+Streamlit frontend for the SuperKart sales forecasting solution.
+
+A second, parallel UI to the Web Components workflow in frontend_files/.
+Both talk to the exact same Flask backend and therefore share the same
+server side prediction history, a forecast made from either UI shows up
+in both. This one favors a fast, form driven experience built entirely
+with Streamlit's own widgets, useful when a plain data science tool is
+preferred over the richer workflow app.
+
+Collects plain business inputs from the user, derives the engineered
+features the backend model expects (Product_Id_char, Store_Age_Years,
+Product_Type_Category), and calls the Flask backend for:
+  - Online inference (a single product-store record)
+  - Batch inference (a CSV file of multiple records)
+  - Prediction history (every forecast recorded server side, by either UI)
+"""
+
+import os
+
+import pandas as pd
+import requests
+import streamlit as st
+
+st.set_page_config(page_title="SuperKart Sales Forecast", page_icon=":shopping_trolley:", layout="centered")
+
+# ---------------------------------------------------------------------------
+# Reference data used to derive engineered features from plain user inputs.
+# Kept in sync with the feature engineering step in the training notebook.
+# ---------------------------------------------------------------------------
+CURRENT_YEAR = 2025  # reference year used for Store_Age_Years at training time
+
+PRODUCT_TYPE_TO_ID_CHAR = {
+    "Baking Goods": "FD", "Breads": "FD", "Breakfast": "FD", "Canned": "FD",
+    "Dairy": "FD", "Frozen Foods": "FD", "Fruits and Vegetables": "FD",
+    "Meat": "FD", "Seafood": "FD", "Snack Foods": "FD", "Starchy Foods": "FD",
+    "Hard Drinks": "DR", "Soft Drinks": "DR",
+    "Health and Hygiene": "NC", "Household": "NC", "Others": "NC",
+}
+PERISHABLE_TYPES = {"Dairy", "Meat", "Fruits and Vegetables", "Breads", "Breakfast", "Seafood"}
+
+PRODUCT_TYPES = sorted(PRODUCT_TYPE_TO_ID_CHAR.keys())
+SUGAR_CONTENT_OPTIONS = ["Low Sugar", "Regular", "No Sugar"]
+STORE_SIZE_OPTIONS = ["Small", "Medium", "High"]
+CITY_TIER_OPTIONS = ["Tier 1", "Tier 2", "Tier 3"]
+STORE_TYPE_OPTIONS = ["Food Mart", "Supermarket Type1", "Supermarket Type2", "Departmental Store"]
+
+FEATURE_COLUMNS = [
+    "Product_Weight", "Product_Sugar_Content", "Product_Allocated_Area", "Product_MRP",
+    "Store_Size", "Store_Location_City_Type", "Store_Type", "Product_Id_char",
+    "Store_Age_Years", "Product_Type_Category",
+]
+
+
+def derive_engineered_features(product_type: str, store_establishment_year: int) -> dict:
+    """Maps plain business inputs to the engineered features the backend expects."""
+    return {
+        "Product_Id_char": PRODUCT_TYPE_TO_ID_CHAR[product_type],
+        "Store_Age_Years": CURRENT_YEAR - store_establishment_year,
+        "Product_Type_Category": "Perishables" if product_type in PERISHABLE_TYPES else "Non Perishables",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sidebar: backend connection settings
+# ---------------------------------------------------------------------------
+st.sidebar.header("Backend connection")
+# BACKEND_URL can be set at container or process start. Defaults to the
+# Docker network hostname used when both containers run on the same network.
+# Override with "http://127.0.0.1:7860" for a local, non-Docker run, or the
+# forwarded Codespace URL when this app is opened from outside the container.
+default_backend_url = os.environ.get("BACKEND_URL", "http://superkart-backend:7860")
+backend_url = st.sidebar.text_input("Flask API base URL", value=default_backend_url).rstrip("/")
+st.sidebar.caption(
+    "Defaults to the BACKEND_URL environment variable if set. Use the Docker network "
+    "hostname (http://superkart-backend:7860) when both containers share a network, "
+    "http://127.0.0.1:7860 for a local run, or the forwarded Codespace URL from outside."
+)
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    "This is a second, lightweight UI for the same model. The full workflow app, with "
+    "richer navigation and documentation, lives on its own deployed URL. Both read and "
+    "write the same prediction history through this backend."
+)
+
+st.title(":shopping_trolley: SuperKart Sales Forecasting")
+st.write(
+    "Forecast the expected total sales revenue of a product at a given SuperKart outlet "
+    "for the upcoming quarter."
+)
+
+tab_single, tab_batch, tab_history = st.tabs(
+    [":small_blue_diamond: Single Prediction", ":package: Batch Prediction", ":clock3: History"]
+)
+
+# ---------------------------------------------------------------------------
+# Tab 1: online inference, single record
+# ---------------------------------------------------------------------------
+with tab_single:
+    st.subheader("Enter product and store details")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        product_type = st.selectbox("Product Type", PRODUCT_TYPES, index=PRODUCT_TYPES.index("Dairy"))
+        product_weight = st.number_input("Product Weight", min_value=0.0, value=12.66, step=0.01)
+        product_sugar_content = st.selectbox("Product Sugar Content", SUGAR_CONTENT_OPTIONS)
+        product_allocated_area_percent = st.slider(
+            "Product Allocated Area (% of total store display area)",
+            min_value=0.0, max_value=100.0, value=3.0, step=0.1,
+        )
+        product_mrp = st.number_input("Product MRP", min_value=0.0, value=117.08, step=0.01)
+    with col2:
+        store_size = st.selectbox("Store Size", STORE_SIZE_OPTIONS, index=1)
+        store_location_city_type = st.selectbox("Store Location City Type", CITY_TIER_OPTIONS, index=1)
+        store_type = st.selectbox("Store Type", STORE_TYPE_OPTIONS, index=2)
+        store_establishment_year = st.number_input(
+            "Store Establishment Year", min_value=1980, max_value=CURRENT_YEAR, value=2009, step=1,
+        )
+
+    if st.button("Predict Sales", type="primary"):
+        engineered = derive_engineered_features(product_type, int(store_establishment_year))
+        payload = {
+            "Product_Weight": product_weight,
+            "Product_Sugar_Content": product_sugar_content,
+            "Product_Allocated_Area": product_allocated_area_percent / 100,
+            "Product_MRP": product_mrp,
+            "Store_Size": store_size,
+            "Store_Location_City_Type": store_location_city_type,
+            "Store_Type": store_type,
+            **engineered,
+        }
+
+        with st.spinner("Calling the forecasting API..."):
+            try:
+                response = requests.post(f"{backend_url}/v1/predict", json=payload, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+                st.success(
+                    f"Predicted sales revenue: Rs. {result['Product_Store_Sales_Total_Prediction']:,.2f}"
+                )
+                with st.expander("Request payload sent to the API"):
+                    st.json(payload)
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Could not reach the backend API: {exc}")
+
+# ---------------------------------------------------------------------------
+# Tab 2: batch inference
+# ---------------------------------------------------------------------------
+with tab_batch:
+    st.subheader("Upload a CSV file for batch forecasting")
+    st.caption("Required columns: " + ", ".join(FEATURE_COLUMNS))
+
+    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+
+    if uploaded_file is not None:
+        batch_df = pd.read_csv(uploaded_file)
+        st.write("Preview of uploaded data:")
+        st.dataframe(batch_df.head())
+
+        if st.button("Run Batch Prediction", type="primary"):
+            uploaded_file.seek(0)
+            with st.spinner("Calling the forecasting API..."):
+                try:
+                    files = {"file": ("batch.csv", uploaded_file.getvalue(), "text/csv")}
+                    response = requests.post(f"{backend_url}/v1/predictbatch", files=files, timeout=60)
+                    response.raise_for_status()
+                    predictions = response.json()
+
+                    result_df = batch_df.copy()
+                    result_df["Predicted_Product_Store_Sales_Total"] = [
+                        predictions[str(i)] for i in range(len(result_df))
+                    ]
+                    st.success(f"Forecasted sales for {len(result_df)} records.")
+                    st.dataframe(result_df)
+
+                    csv_bytes = result_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "Download predictions as CSV",
+                        data=csv_bytes,
+                        file_name="superkart_predictions.csv",
+                        mime="text/csv",
+                    )
+                except requests.exceptions.RequestException as exc:
+                    st.error(f"Could not reach the backend API: {exc}")
+
+# ---------------------------------------------------------------------------
+# Tab 3: prediction history, server side, shared with the other frontend
+# ---------------------------------------------------------------------------
+with tab_history:
+    st.subheader("Prediction history")
+    st.caption(
+        "Every forecast this API has produced, from either frontend, most recent first, "
+        "stored server side. GET /v1/history and DELETE /v1/history back this tab."
+    )
+
+    col_refresh, col_clear = st.columns([1, 1])
+    with col_refresh:
+        st.button(":arrows_counterclockwise: Refresh", key="history_refresh")
+    with col_clear:
+        if st.button(":wastebasket: Clear history", key="history_clear"):
+            try:
+                clear_response = requests.delete(f"{backend_url}/v1/history", timeout=15)
+                clear_response.raise_for_status()
+                st.success("History cleared.")
+            except requests.exceptions.RequestException as exc:
+                st.error(f"Could not clear history: {exc}")
+
+    try:
+        history_response = requests.get(f"{backend_url}/v1/history?limit=50", timeout=15)
+        history_response.raise_for_status()
+        records = history_response.json().get("predictions", [])
+
+        if not records:
+            st.info("No predictions recorded yet. Run a forecast above to see it show up here.")
+        else:
+            summary_df = pd.DataFrame(
+                [
+                    {"Mode": rec["mode"], "Summary": rec["summary"], "Created At": rec["createdAt"]}
+                    for rec in records
+                ]
+            )
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+            with st.expander("View the exact input and result behind each record"):
+                for rec in records:
+                    st.markdown(f"**#{rec['id']} &middot; {rec['mode']} &middot; {rec['createdAt']}**")
+                    st.json({"input": rec["input"], "result": rec["result"]})
+    except requests.exceptions.RequestException as exc:
+        st.error(f"Could not reach the backend API: {exc}")
+'''
+code('%%writefile frontend_streamlit/app.py\n' + FRONTEND_STREAMLIT_APP_PY)
+md("## Streamlit Requirements and Dockerfile")
+code('%%writefile frontend_streamlit/requirements.txt\nstreamlit==1.38.0\npandas==2.2.2\nrequests==2.32.4')
+FRONTEND_STREAMLIT_DOCKERFILE = """FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+
+EXPOSE 8501
+
+# Default backend hostname when running on a shared Docker network with the
+# backend container aliased as superkart-backend. Override with
+# docker run -e BACKEND_URL=... for a different setup, this is also editable
+# at runtime from the app's own sidebar without restarting the container.
+ENV BACKEND_URL="http://superkart-backend:7860"
+
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+"""
+code('%%writefile frontend_streamlit/Dockerfile\n' + FRONTEND_STREAMLIT_DOCKERFILE)
 
 # =====================================================================
 # Local Smoke Test (pre-deployment validation)
@@ -3511,12 +3785,13 @@ code(
     "if docker_available:\n"
     "    # Clean up any leftovers from a previous run of this cell, so it can be\n"
     "    # re-run safely without name collisions\n"
-    '    run_cmd("docker rm -f superkart-backend superkart-frontend")\n'
+    '    run_cmd("docker rm -f superkart-backend superkart-frontend superkart-streamlit")\n'
     '    run_cmd("docker network rm superkart-network")\n'
     "\n"
     '    run_cmd("docker network create superkart-network")\n'
     '    run_cmd("docker build -t superkart-backend ./backend_files")\n'
     '    run_cmd("docker build -t superkart-frontend ./frontend_files")\n'
+    '    run_cmd("docker build -t superkart-streamlit ./frontend_streamlit")\n'
     "else:\n"
     '    print("Skipping Docker build: Docker is not available in this environment.")'
 )
@@ -3530,7 +3805,11 @@ code(
     '        "docker run -d --name superkart-frontend --network superkart-network "\n'
     '        \'-p 8501:8501 -e BACKEND_URL="http://127.0.0.1:7860" superkart-frontend\'\n'
     "    )\n"
-    "    time.sleep(6)  # give both containers a moment to finish starting\n"
+    "    run_cmd(\n"
+    '        "docker run -d --name superkart-streamlit --network superkart-network "\n'
+    '        \'-p 8502:8501 -e BACKEND_URL="http://127.0.0.1:7860" superkart-streamlit\'\n'
+    "    )\n"
+    "    time.sleep(6)  # give all three containers a moment to finish starting\n"
     '    run_cmd("docker ps --filter name=superkart")\n'
     "\n"
     "    # Confirms the entrypoint script actually regenerated env.js with the\n"
@@ -3572,22 +3851,27 @@ code(
     "    print(container_history.json())\n"
     "\n"
     "    frontend_health = requests.get(\"http://127.0.0.1:8501\", timeout=10)\n"
-    '    print("\\nFrontend container reachable:", frontend_health.status_code == 200)'
+    '    print("\\nFrontend container reachable:", frontend_health.status_code == 200)\n'
+    "\n"
+    "    streamlit_health = requests.get(\"http://127.0.0.1:8502\", timeout=10)\n"
+    '    print("Streamlit container reachable:", streamlit_health.status_code == 200)'
 )
 md(
-    "If the cell above ran, both containers came up, the backend answered a real prediction "
+    "If the cell above ran, all three containers came up, the backend answered a real prediction "
     "request with the CORS header a browser checks for, its history endpoint shows that same "
-    "prediction persisted inside the container's own SQLite file, and the frontend served its "
-    "page with `env.js` pointing at the backend's published port rather than its internal Docker "
-    "hostname. At this point `http://localhost:8501` can be opened in a real browser and used "
-    "directly, the same way a person will use it once this is running inside a Codespace."
+    "prediction persisted inside the container's own SQLite file, and both frontends served "
+    "their pages, the Web Components one with `env.js` pointing at the backend's published port "
+    "rather than its internal Docker hostname. At this point `http://localhost:8501` (Web "
+    "Components) and `http://localhost:8502` (Streamlit) can both be opened in a real browser "
+    "and used directly, the same way a person will use them once this is running inside a "
+    "Codespace."
 )
 code(
     "if docker_available:\n"
     "    # Stop the containers so re-running this notebook does not collide with\n"
     "    # them. Images stay cached, so a future docker run is instant.\n"
-    '    run_cmd("docker stop superkart-backend superkart-frontend")\n'
-    '    run_cmd("docker rm superkart-backend superkart-frontend")\n'
+    '    run_cmd("docker stop superkart-backend superkart-frontend superkart-streamlit")\n'
+    '    run_cmd("docker rm superkart-backend superkart-frontend superkart-streamlit")\n'
     '    print("Containers stopped and removed. Images and network are left in place for reuse.")'
 )
 
@@ -3596,9 +3880,10 @@ code(
 # =====================================================================
 md("# **Pushing Deployment Files to GitHub**")
 md(
-    "The cell below stages, commits, and pushes `backend_files/` and `frontend_files/` "
-    "(Flask API, Web Components app, and their `requirements.txt`/`Dockerfile`) to this project's "
-    "repository, from which they get built and run as containers inside a GitHub Codespace.\n\n"
+    "The cell below stages, commits, and pushes `backend_files/`, `frontend_files/`, and "
+    "`frontend_streamlit/` (the Flask API, the Web Components app, the Streamlit app, and each "
+    "one's own `requirements.txt`/`Dockerfile`) to this project's repository, from which they "
+    "get built and run as containers inside a GitHub Codespace.\n\n"
     "If you are adapting this notebook for a different repository, change `REPO_URL` below and "
     "make sure `git` is configured with push access (a Personal Access Token stored in a "
     "credential manager, or embedded in the remote URL). No token is hard-coded here."
@@ -3627,8 +3912,8 @@ code(
     'if git("git remote get-url origin") != 0:\n'
     '    git(f"git remote add origin {REPO_URL}")\n'
     "\n"
-    'git("git add backend_files frontend_files")\n'
-    'git(\'git commit -m "Add SuperKart Flask backend and Web Components frontend deployment files"\')\n'
+    'git("git add backend_files frontend_files frontend_streamlit")\n'
+    'git(\'git commit -m "Add SuperKart Flask backend and Web Components and Streamlit frontend deployment files"\')\n'
     'git("git branch -M main")\n'
     'git("git push -u origin main")'
 )

@@ -656,3 +656,71 @@ cells, which now show a real `200` response, an actual predicted sales
 value, a real ten-row batch result, and the live history endpoint
 reflecting both of those calls. Committed the refreshed notebook and
 both READMEs.
+
+## Bringing back a Streamlit frontend alongside the Web Components app
+
+The user pointed out that some review checklists call for a Streamlit
+frontend specifically, and asked for one to exist in parallel with the
+Web Components app rather than replacing it. The original Streamlit app,
+from before the switch to Web Components, was still sitting in git
+history at commit `0d17147`, fully compatible with the current backend
+API since neither `/v1/predict` nor `/v1/predictbatch` ever changed shape.
+
+Resurrected it into a new `frontend_streamlit/` folder, kept side by side
+with `frontend_files/`, and asked the user two quick scope questions
+before starting: whether it should stay a bare-bones single and batch
+prediction app or also pick up the newer conveniences (server side
+history, a friendlier area input), and whether it should be deployed live
+as a third container or just live in the repos as a buildable option.
+Answer to both was to go further, feature parity and a live deployment,
+plus adding it to both repositories the same way `frontend_files/` and
+`backend_files/` already exist in both.
+
+Single Prediction and Batch Prediction tabs came back close to the
+original, the Product Allocated Area field is now a percentage slider
+instead of a raw 0 to 1 fraction, matching the same reasoning behind
+that change in the Web Components form. Added a third tab, History,
+reading `GET /v1/history` into a table with an expander per record for
+the full input and result, and a Clear history button wired to `DELETE
+/v1/history`. Since both frontends are thin clients over the same Flask
+backend, a forecast made from one shows up in the other without any
+extra wiring, the backend already recorded history the same way
+regardless of which frontend called it.
+
+Tested locally first, a plain `streamlit run` against a local Flask
+process, confirmed with Playwright that a prediction succeeds and the
+history tab renders records from both frontends. `st.dataframe` in this
+Streamlit version renders through a virtualized, canvas-based grid, so a
+DOM text search for table contents comes back empty even though the data
+is genuinely there and visible, a screenshot was the more reliable check
+than an accessibility-tree assertion for that particular widget.
+
+Deployed it to the live Codespace as a third container, `superkart-
+streamlit`, on port `8502`, built from the same `frontend_streamlit/`
+folder just pushed to `super_kart_model_deployment`, on the same shared
+Docker network as the other two containers, with the same `restart:
+unless-stopped` policy. Forwarded and publicized port `8502` the same way
+the other two ports already were, it came up correctly on the first try,
+no repeat of the prebuild-related routing fault from earlier. A full
+Playwright pass against the live URL confirmed a real prediction comes
+back correctly.
+
+Folded the same addition into `build_notebook.py`: a new section writes
+`frontend_streamlit/app.py`, `requirements.txt`, and `Dockerfile` right
+after the Web Components frontend section, the Docker validation section
+now builds, runs, and health-checks all three containers instead of two,
+and the git push cell now stages `frontend_streamlit/` alongside the
+other two folders. Regenerated the notebook from scratch, ran it fully
+including the live inference cells with the same Codespace backend URL,
+97 cells executed clean. Cleared the test predictions left in the live
+history by both the notebook run and the Playwright checks before
+finishing, so a first-time visitor to either frontend sees an empty
+history rather than test data.
+
+Updated both `README.md` files with the third live URL, a description of
+the Streamlit app and its History tab, and Streamlit-specific commands
+added to every existing run option (Codespace, local Docker, no Docker
+at all). Committed and pushed the `frontend_streamlit/` addition to
+`super_kart_model_deployment` first so the Codespace could pull and build
+it, then committed the notebook, `build_notebook.py`, and both READMEs to
+`model_deployment_dba`.
