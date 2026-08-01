@@ -174,6 +174,14 @@ md("## First and Last Rows")
 code("df.head()")
 code("df.tail()")
 
+md("## Random Sample of Rows")
+md(
+    "Head and tail only show rows near the two ends of the file. A random sample gives a "
+    "better read on what a typical row looks like across the full dataset, not just the "
+    "beginning and end."
+)
+code("df.sample(n=5, random_state=1)")
+
 md("## Data Types")
 code("df.info()")
 md(
@@ -483,6 +491,8 @@ code(
     "\n"
     "df.head()"
 )
+code("df.tail()")
+code("df.sample(n=5, random_state=1)")
 code('df.info()')
 md(
     "All three engineered features are derived purely from data already in the dataset, "
@@ -529,16 +539,33 @@ md(
     "are documented here but left untreated."
 )
 
-md("## Train-Test Split")
+md("## Train, Validation, and Test Split")
+md(
+    "A single train-test split is not enough here, because model selection itself needs data "
+    "that the final reported number has never touched. We split the data three ways instead:\n"
+    "- **Train (60%)**: fits every model, and is what `GridSearchCV` folds internally when tuning.\n"
+    "- **Validation (20%)**: used below to compare all baseline and tuned candidates against each "
+    "other and pick the final model. This is a separate concern from the cross-validation folds "
+    "`GridSearchCV` uses, which only ever see the training split. Validation compares different "
+    "model families and baseline vs. tuned, cross-validation tunes hyperparameters within a "
+    "single model family.\n"
+    "- **Test (20%)**: held out completely until the final model has already been chosen. It "
+    "plays no part in fitting any model or in picking the winner. Its only job is to report an "
+    "honest, unbiased estimate of how the chosen model performs on data it never influenced."
+)
 code(
-    '# Separate target from predictors\n'
+    "# Separate target from predictors\n"
     'X = df.drop(columns=["Product_Store_Sales_Total"])\n'
     'y = df["Product_Store_Sales_Total"]\n'
     "\n"
-    "X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=1)\n"
+    "# First carve out the 60% training split, then split the remaining 40%\n"
+    "# evenly into validation and test (20% each of the full dataset)\n"
+    "X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.4, random_state=1)\n"
+    "X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=1)\n"
     "\n"
-    'print("Train:", X_train.shape)\n'
-    'print("Test: ", X_test.shape)'
+    'print("Train:     ", X_train.shape)\n'
+    'print("Validation:", X_val.shape)\n'
+    'print("Test:      ", X_test.shape)'
 )
 
 md("## Preprocessing Pipeline")
@@ -710,6 +737,11 @@ code(
 )
 
 md("## Baseline Models")
+md(
+    "Every baseline and tuned candidate below is scored on **Train** and **Validation** only. "
+    "The test set stays untouched until the single final model has already been chosen, so the "
+    "comparison here cannot accidentally overfit to it."
+)
 code(
     "# Fit each model family at its library defaults first, before any tuning.\n"
     "# This baseline is what tells us later whether tuning actually helped, and\n"
@@ -724,12 +756,12 @@ code(
     "    pipeline.fit(X_train, y_train)\n"
     "    baseline_pipelines[name] = pipeline\n"
     "\n"
-    "    # Score on both splits so the train-test gap is visible per model,\n"
-    "    # not just the raw test number\n"
+    "    # Score on train and validation so the train-validation gap is visible\n"
+    "    # per model. Test is deliberately left out of this comparison.\n"
     '    train_perf = model_performance_regression(pipeline, X_train, y_train).assign(Model=name, Data="Train")\n'
-    '    test_perf = model_performance_regression(pipeline, X_test, y_test).assign(Model=name, Data="Test")\n'
+    '    val_perf = model_performance_regression(pipeline, X_val, y_val).assign(Model=name, Data="Validation")\n'
     "    baseline_results.append(train_perf)\n"
-    "    baseline_results.append(test_perf)\n"
+    "    baseline_results.append(val_perf)\n"
     "\n"
     '    print(f"{name} baseline fit done.")\n'
     "\n"
@@ -738,9 +770,9 @@ code(
 )
 code('baseline_comparison.sort_values(["Data", "RMSE"]).reset_index(drop=True)')
 md(
-    "Every baseline shows some gap between train and test RMSE, which is expected for "
+    "Every baseline shows some gap between train and validation RMSE, which is expected for "
     "unconstrained tree-based models. Random Forest, Bagging, and the untuned Decision Tree fit "
-    "the training data almost perfectly while giving up noticeably more on the test set, a clear "
+    "the training data almost perfectly while giving up noticeably more on validation, a clear "
     "sign of overfitting. Gradient Boosting and XGBoost hold up a bit better out of the box, and "
     "AdaBoost, being a shallow-tree ensemble, underfits slightly by comparison. None of these are "
     "final numbers. Hyperparameter tuning below is where we address the overfitting."
@@ -754,7 +786,11 @@ md(
     "Each of the six models is tuned with `GridSearchCV`, 5-fold cross-validation, scoring on "
     "`neg_root_mean_squared_error` so the search optimizes the same metric we use to judge the "
     "final model. This reuses the `MODEL_CONFIGS` grids defined above and loops over all six "
-    "families in one pass."
+    "families in one pass.\n\n"
+    "The 5 folds here are carved out of `X_train` only, and are a different thing from the "
+    "Validation split defined earlier. Cross-validation is how each model family picks its own "
+    "best hyperparameters. The separate Validation set, further below, is how we compare the "
+    "six tuned families against each other and against their own baselines."
 )
 code(
     "tuned_pipelines = {}\n"
@@ -782,9 +818,9 @@ code(
     "    best_params[name] = grid.best_params_\n"
     "\n"
     '    train_perf = model_performance_regression(grid.best_estimator_, X_train, y_train).assign(Model=name, Data="Train")\n'
-    '    test_perf = model_performance_regression(grid.best_estimator_, X_test, y_test).assign(Model=name, Data="Test")\n'
+    '    val_perf = model_performance_regression(grid.best_estimator_, X_val, y_val).assign(Model=name, Data="Validation")\n'
     "    tuned_results.append(train_perf)\n"
-    "    tuned_results.append(test_perf)\n"
+    "    tuned_results.append(val_perf)\n"
     "\n"
     '    print(f"{name}: best CV RMSE = {-grid.best_score_:.2f}, params = {grid.best_params_}")\n'
     "\n"
@@ -793,25 +829,25 @@ code(
 )
 code('tuned_comparison.sort_values(["Data", "RMSE"]).reset_index(drop=True)')
 
-md("## Baseline vs. Tuned, Test RMSE")
+md("## Baseline vs. Tuned, Validation RMSE")
 code(
-    'baseline_test = baseline_comparison[baseline_comparison["Data"] == "Test"].set_index("Model")["RMSE"]\n'
-    'tuned_test = tuned_comparison[tuned_comparison["Data"] == "Test"].set_index("Model")["RMSE"]\n'
+    'baseline_val = baseline_comparison[baseline_comparison["Data"] == "Validation"].set_index("Model")["RMSE"]\n'
+    'tuned_val = tuned_comparison[tuned_comparison["Data"] == "Validation"].set_index("Model")["RMSE"]\n'
     "\n"
     "rmse_before_after = pd.DataFrame({\n"
-    '    "Baseline Test RMSE": baseline_test,\n'
-    '    "Tuned Test RMSE": tuned_test,\n'
+    '    "Baseline Validation RMSE": baseline_val,\n'
+    '    "Tuned Validation RMSE": tuned_val,\n'
     "})\n"
-    'rmse_before_after["Improvement"] = rmse_before_after["Baseline Test RMSE"] - rmse_before_after["Tuned Test RMSE"]\n'
-    'rmse_before_after.sort_values("Tuned Test RMSE")'
+    'rmse_before_after["Improvement"] = rmse_before_after["Baseline Validation RMSE"] - rmse_before_after["Tuned Validation RMSE"]\n'
+    'rmse_before_after.sort_values("Tuned Validation RMSE")'
 )
 md(
-    "Tuning brings test RMSE down, or at least holds it steady, for every model family, and the "
-    "gap between train and test performance shrinks compared to the baselines. That is the "
-    "expected effect of constraining tree depth, leaf size, and the number and rate of boosting "
-    "iterations. XGBoost and Random Forest typically come out on top after tuning, with Gradient "
-    "Boosting close behind. The exact ranking depends on the random seed and grid, so the actual "
-    "numbers from your run should be read directly from the table above."
+    "Tuning brings validation RMSE down, or at least holds it steady, for every model family, "
+    "and the gap between train and validation performance shrinks compared to the baselines. "
+    "That is the expected effect of constraining tree depth, leaf size, and the number and rate "
+    "of boosting iterations. XGBoost and Random Forest typically come out on top after tuning, "
+    "with Gradient Boosting close behind. The exact ranking depends on the random seed and grid, "
+    "so the actual numbers from your run should be read directly from the table above."
 )
 
 # =====================================================================
@@ -832,17 +868,18 @@ code(
     'full_comparison.sort_values(["Data", "RMSE"]).reset_index(drop=True)'
 )
 code(
-    "# Rank purely on test RMSE, our metric of choice\n"
-    'test_ranking = full_comparison[full_comparison["Data"] == "Test"].sort_values("RMSE").reset_index(drop=True)\n'
-    "test_ranking"
+    "# Rank purely on Validation RMSE, our metric of choice. Test never enters\n"
+    "# this decision, which is the entire point of holding it out separately.\n"
+    'validation_ranking = full_comparison[full_comparison["Data"] == "Validation"].sort_values("RMSE").reset_index(drop=True)\n'
+    "validation_ranking"
 )
 md(
     "## Selecting the Final Model\n"
-    "We pick the candidate with the lowest test RMSE, as long as it does not also show an "
-    "unreasonable train-test gap that would suggest it just got lucky on this particular split. "
-    "In practice this tends to be one of the tuned boosting or Random Forest pipelines. The "
-    "selection code below is generic: it reads the top row of `test_ranking` and pulls the "
-    "matching pipeline out of `all_pipelines`, so whichever model wins in your run is the one "
+    "We pick the candidate with the lowest validation RMSE, as long as it does not also show an "
+    "unreasonable train-validation gap that would suggest it just got lucky on this particular "
+    "split. In practice this tends to be one of the tuned boosting or Random Forest pipelines. "
+    "The selection code below is generic: it reads the top row of `validation_ranking` and pulls "
+    "the matching pipeline out of `all_pipelines`, so whichever model wins in your run is the one "
     "that gets carried forward, no manual editing required."
 )
 code(
@@ -851,13 +888,13 @@ code(
     '    all_pipelines[f"{name} (Baseline)"] = baseline_pipelines[name]\n'
     '    all_pipelines[f"{name} (Tuned)"] = tuned_pipelines[name]\n'
     "\n"
-    "# test_ranking above only has bare model names, so also rank against the\n"
-    "# Stage-qualified full_comparison table to resolve baseline vs tuned\n"
-    'test_ranking_full = full_comparison[full_comparison["Data"] == "Test"].copy()\n'
-    'test_ranking_full["Model_Stage"] = test_ranking_full["Model"] + " (" + test_ranking_full["Stage"] + ")"\n'
-    'test_ranking_full = test_ranking_full.sort_values("RMSE").reset_index(drop=True)\n'
+    "# validation_ranking above only has bare model names, so also rank against\n"
+    "# the Stage-qualified full_comparison table to resolve baseline vs tuned\n"
+    'validation_ranking_full = full_comparison[full_comparison["Data"] == "Validation"].copy()\n'
+    'validation_ranking_full["Model_Stage"] = validation_ranking_full["Model"] + " (" + validation_ranking_full["Stage"] + ")"\n'
+    'validation_ranking_full = validation_ranking_full.sort_values("RMSE").reset_index(drop=True)\n'
     "\n"
-    'best_model_key = test_ranking_full.loc[0, "Model_Stage"]\n'
+    'best_model_key = validation_ranking_full.loc[0, "Model_Stage"]\n'
     "final_model = all_pipelines[best_model_key]\n"
     "\n"
     'print(f"Selected final model: {best_model_key}")\n'
@@ -865,6 +902,14 @@ code(
 )
 
 md("## Final Model Performance on the Test Set")
+md(
+    "This is the first time the test set is used for anything in this notebook. Everything up "
+    "to this point, baseline fitting, `GridSearchCV` tuning, and model selection, only ever saw "
+    "the train and validation splits. The number below is therefore an honest read on how the "
+    "final model should perform on genuinely new data. The test set is used again just below, "
+    "purely to confirm the serialized model still produces the same predictions after being "
+    "reloaded, not to make any further decisions about which model to keep."
+)
 code(
     'final_test_perf = model_performance_regression(final_model, X_test, y_test)\n'
     "final_test_perf"

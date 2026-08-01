@@ -5,6 +5,7 @@ __pycache__/
 explore.py
 explore2.py
 *.log
+*.html
 .DS_Store
 backend_pid.txt
 frontend_pid.txt
