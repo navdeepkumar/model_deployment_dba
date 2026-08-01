@@ -711,14 +711,21 @@ code(
 
 md("## Baseline Models")
 code(
+    "# Fit each model family at its library defaults first, before any tuning.\n"
+    "# This baseline is what tells us later whether tuning actually helped, and\n"
+    "# by how much, for every model rather than just the one we end up picking.\n"
     "baseline_pipelines = {}\n"
     "baseline_results = []\n"
     "\n"
     "for name, cfg in MODEL_CONFIGS.items():\n"
+    "    # Same preprocessor object reused for every model, so any difference in\n"
+    "    # performance comes from the estimator, not from inconsistent preprocessing\n"
     '    pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", cfg["estimator"])])\n'
     "    pipeline.fit(X_train, y_train)\n"
     "    baseline_pipelines[name] = pipeline\n"
     "\n"
+    "    # Score on both splits so the train-test gap is visible per model,\n"
+    "    # not just the raw test number\n"
     '    train_perf = model_performance_regression(pipeline, X_train, y_train).assign(Model=name, Data="Train")\n'
     '    test_perf = model_performance_regression(pipeline, X_test, y_test).assign(Model=name, Data="Test")\n'
     "    baseline_results.append(train_perf)\n"
@@ -755,6 +762,9 @@ code(
     "best_params = {}\n"
     "\n"
     "for name, cfg in MODEL_CONFIGS.items():\n"
+    "    # Fresh, untrained pipeline per model. GridSearchCV clones this internally\n"
+    "    # for every fold and every parameter combination, so nothing here carries\n"
+    "    # state over from the baseline fit above\n"
     '    base_pipeline = Pipeline(steps=[("preprocessor", preprocessor), ("model", cfg["estimator"])])\n'
     "\n"
     "    grid = GridSearchCV(\n"
@@ -766,6 +776,8 @@ code(
     "    )\n"
     "    grid.fit(X_train, y_train)\n"
     "\n"
+    "    # best_estimator_ is already refit on the full training set with the\n"
+    "    # winning parameters, ready to evaluate and use directly\n"
     "    tuned_pipelines[name] = grid.best_estimator_\n"
     "    best_params[name] = grid.best_params_\n"
     "\n"
@@ -798,7 +810,7 @@ md(
     "gap between train and test performance shrinks compared to the baselines. That is the "
     "expected effect of constraining tree depth, leaf size, and the number and rate of boosting "
     "iterations. XGBoost and Random Forest typically come out on top after tuning, with Gradient "
-    "Boosting close behind; the exact ranking depends on the random seed and grid, so the actual "
+    "Boosting close behind. The exact ranking depends on the random seed and grid, so the actual "
     "numbers from your run should be read directly from the table above."
 )
 
@@ -1134,8 +1146,8 @@ def derive_engineered_features(product_type: str, store_establishment_year: int)
 # ---------------------------------------------------------------------------
 st.sidebar.header("Backend connection")
 # BACKEND_URL can be set at container or process start. Defaults to the
-# Docker network hostname used when both containers run on the same network;
-# override with "http://127.0.0.1:7860" for a local, non-Docker run.
+# Docker network hostname used when both containers run on the same network.
+# Override with "http://127.0.0.1:7860" for a local, non-Docker run.
 default_backend_url = os.environ.get("BACKEND_URL", "http://superkart-backend:7860")
 backend_url = st.sidebar.text_input("Flask API base URL", value=default_backend_url).rstrip("/")
 st.sidebar.caption(
@@ -1345,6 +1357,39 @@ code(
 md(
     "Health check, single prediction, and batch prediction all come back with a 200 and sensible "
     "numbers. The application logic is sound, so we move on to Docker."
+)
+
+# =====================================================================
+# Running the Application Locally (Without Docker)
+# =====================================================================
+md("# **Running the Application Locally (Without Docker)**")
+md(
+    "The smoke test above starts the Flask app for a few seconds just to prove the endpoints "
+    "work, then shuts it down. If you want to actually use the app in a browser on your own "
+    "machine, without Docker and without a Codespace, run the backend and frontend as two "
+    "ordinary long-lived processes, each in its own terminal, from the project root.\n\n"
+    "**Terminal 1, backend:**\n"
+    "```bash\n"
+    "python backend_files/app.py\n"
+    "```\n"
+    "This starts the Flask dev server on `http://127.0.0.1:7860`. It stays running until you "
+    "stop it with `Ctrl+C`.\n\n"
+    "**Terminal 2, frontend:**\n"
+    "```bash\n"
+    "# Windows PowerShell\n"
+    '$env:BACKEND_URL = "http://127.0.0.1:7860"\n'
+    "streamlit run frontend_files/app.py\n"
+    "\n"
+    "# macOS / Linux\n"
+    'BACKEND_URL="http://127.0.0.1:7860" streamlit run frontend_files/app.py\n'
+    "```\n"
+    "Streamlit opens `http://localhost:8501` in your browser automatically. The `BACKEND_URL` "
+    "environment variable overrides the app's default, which otherwise assumes the Docker network "
+    "hostname `superkart-backend` and would not resolve outside a container.\n\n"
+    "Both apps read `requirements.txt` in their own folder for their dependency list, so a plain "
+    "`pip install -r backend_files/requirements.txt` (and the same for `frontend_files`) in your "
+    "active Python environment is all that is needed before running the commands above. No "
+    "Docker, no Codespace, no separate configuration file."
 )
 
 # =====================================================================

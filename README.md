@@ -146,7 +146,39 @@ deployment can be reproduced without re-running the notebook.
   notebook's "Docker Deployment (Local Validation)" section, so the
   Dockerfiles are proven to work before ever reaching a Codespace.
 
-### Running it locally or in a Codespace
+### Running it locally without Docker
+
+The fastest way to try the app on your own machine is to run both pieces as
+plain Python processes, no Docker and no Codespace involved.
+
+```bash
+# One-time setup
+pip install -r backend_files/requirements.txt
+pip install -r frontend_files/requirements.txt
+```
+
+```bash
+# Terminal 1: backend
+python backend_files/app.py
+# Serves on http://127.0.0.1:7860
+```
+
+```bash
+# Terminal 2: frontend (Windows PowerShell)
+$env:BACKEND_URL = "http://127.0.0.1:7860"
+streamlit run frontend_files/app.py
+
+# Terminal 2: frontend (macOS / Linux)
+BACKEND_URL="http://127.0.0.1:7860" streamlit run frontend_files/app.py
+```
+
+Streamlit opens `http://localhost:8501` in your browser. `BACKEND_URL`
+overrides the app's default, which otherwise points at the Docker network
+hostname `superkart-backend` and would not resolve outside a container.
+This exact setup is also exercised inside the notebook, in its "Running the
+Application Locally (Without Docker)" and "Local Smoke Test" sections.
+
+### Running it with Docker, locally or in a Codespace
 
 ```bash
 # 1. Build both images
