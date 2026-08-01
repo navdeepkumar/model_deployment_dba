@@ -58,8 +58,8 @@ def derive_engineered_features(product_type: str, store_establishment_year: int)
 # ---------------------------------------------------------------------------
 st.sidebar.header("Backend connection")
 # BACKEND_URL can be set at container or process start. Defaults to the
-# Docker network hostname used when both containers run on the same network;
-# override with "http://127.0.0.1:7860" for a local, non-Docker run.
+# Docker network hostname used when both containers run on the same network.
+# Override with "http://127.0.0.1:7860" for a local, non-Docker run.
 default_backend_url = os.environ.get("BACKEND_URL", "http://superkart-backend:7860")
 backend_url = st.sidebar.text_input("Flask API base URL", value=default_backend_url).rstrip("/")
 st.sidebar.caption(
