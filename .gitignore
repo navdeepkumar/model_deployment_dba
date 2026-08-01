@@ -14,3 +14,8 @@ backend_stdout.log
 backend_stderr.log
 frontend_stdout.log
 frontend_stderr.log
+# SQLite prediction history, a runtime artifact created by the backend on
+# first write, not source code
+*.db
+*.db-wal
+*.db-shm
