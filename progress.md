@@ -529,3 +529,64 @@ review and a real prediction correctly. Re-embedded into
 `build_notebook.py`, rebuilt (241 cells), re-executed end to end with 0
 errors, and pushed to both `model_deployment_dba` and
 `super_kart_model_deployment`.
+
+### 9. Deployed to a real GitHub Codespace and captured live links
+The user asked how to actually deploy this on GitHub so the links could be
+shared. Rather than walking through the GitHub web UI by hand, drove the
+whole thing from the terminal with `gh codespace`, since `gh` was already
+authenticated:
+
+- `gh codespace create -R navdeepkumar/super_kart_model_deployment -b main
+  -m basicLinux32gb` to bring up a Codespace on the clean deployment repo.
+  The repository's Codespaces Prebuild feature (already enabled by the
+  user in GitHub settings) meant the machine came up ready almost
+  immediately.
+- `gh codespace ssh` into it to build both Docker images and start the
+  backend container on a shared Docker network, exactly as the README's
+  Option 1 describes.
+- Getting a forwarded port registered with GitHub's tunnel service turned
+  out to need one extra step beyond just `docker run`, publishing the
+  container's port alone was not enough for `gh codespace ports` to see
+  it. Running `gh codespace ports forward <port>:<local-port>` once was
+  what actually registered the tunnel, after that `gh codespace ports
+  visibility <port>:public` worked and returned a stable
+  `https://<name>-<port>.app.github.dev` URL.
+- Started the frontend container with `BACKEND_URL` set to the backend's
+  public forwarded URL, then made port 8501 public the same way.
+- Verified both independently: `curl`-equivalent requests confirmed the
+  backend's JSON root and the frontend's generated `env.js` pointed at the
+  right backend URL. Then ran a full Playwright pass against the live
+  URLs themselves, filling in the single record form and confirming a
+  real prediction came back. This surfaced one thing worth noting:
+  GitHub shows a one-time "You are about to access a development port"
+  warning page on the first visit to any public Codespace port in a given
+  browser session, both the backend's and the frontend's origins needed
+  that warning dismissed before the app underneath could be reached. This
+  is expected behavior for real visitors too, not a defect. Playwright's
+  own click matched two different elements with the word "Continue" at
+  first (a details toggle and the real button), needed an exact-match
+  selector to click the right one.
+- With a genuinely live backend available, filled in the notebook's
+  `model_root_url` placeholder with the real forwarded URL and re-ran the
+  previously-skipped live inference cells for real. The notebook now
+  shows an actual `200` response, a real predicted sales value from the
+  single-record call, and a real batch of ten predictions from the batch
+  call, not placeholders. `build_notebook.py` itself was left untouched,
+  its `model_root_url` placeholder stays generic so the notebook can be
+  regenerated fresh for anyone else who runs this project.
+- Along the way, chased what looked like a serious encoding bug, some
+  ad hoc diagnostic commands seemed to show committed files stored as
+  UTF-16 with a BOM in git. Turned out to be a false alarm caused by
+  PowerShell's `>` redirection operator, which defaults to UTF-16 on
+  Windows and was corrupting the diagnostic output itself, not the actual
+  git blobs. Re-checked properly by reading `git cat-file -p` output
+  through a Python subprocess instead of a shell redirect, and confirmed
+  every committed file is plain UTF-8 with LF line endings as intended.
+  No actual fix was needed, worth remembering for next time: never pipe
+  raw bytes through PowerShell's `>` or `Out-File`, use `[System.IO.File]`
+  methods or a subprocess call instead.
+- Added a "Live deployment" section to both `README.md` files with the
+  two forwarded URLs, a note about the one-time GitHub warning page, and
+  what to do if the Codespace has gone to sleep from inactivity.
+- Rebuilt nothing else, committed the updated notebook and both READMEs,
+  pushed to `model_deployment_dba`.

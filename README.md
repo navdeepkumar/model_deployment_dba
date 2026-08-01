@@ -8,6 +8,22 @@ containerized Flask + Web Components deployment on GitHub Codespaces.
 > For a full, chronological log of every change made to this project, see
 > [`progress.md`](progress.md).
 
+## Live deployment
+
+The app is running in a GitHub Codespace built from the
+[`super_kart_model_deployment`](https://github.com/navdeepkumar/super_kart_model_deployment)
+repository, the bare minimum deployment package that repository holds:
+
+- Frontend (start here): https://superkart-deploy-v7r5rgvjx9hpgg6-8501.app.github.dev
+- Backend API: https://superkart-deploy-v7r5rgvjx9hpgg6-7860.app.github.dev
+
+The first visit to either link shows a one-time GitHub notice about
+accessing a development port, this is expected, click Continue to reach
+the app. A Codespace stops itself after a period of inactivity, if the
+links do not respond, restart it from the
+[Codespaces list](https://github.com/codespaces), the URLs stay the same
+as long as the Codespace itself is not deleted.
+
 ---
 
 ## 1. Business Context
@@ -273,9 +289,14 @@ python -m venv .venv
   It is the authoring tool used to build and regenerate this project's
   notebook, and is not itself part of the graded deliverable.
 - `execute_notebook.py` executes the notebook end to end against the
-  `superkart-venv` kernel, skipping only the handful of cells that call the
-  live, Codespace-forwarded backend URL (those are validated locally instead,
-  in the notebook's "Local Smoke Test" and "Docker Deployment" sections).
+  `superkart-venv` kernel. By default it skips the handful of cells that
+  call the live, Codespace-forwarded backend URL, since no Codespace is
+  running at authoring time, those are validated locally instead, in the
+  notebook's "Local Smoke Test" and "Docker Deployment" sections. In the
+  committed notebook, `model_root_url` has since been pointed at the
+  running Codespace described under "Live deployment" above and those
+  cells were re-run for real, their outputs in the notebook are actual
+  responses from the deployed API, not placeholders.
 - Docker is optional for a local notebook run. The Docker validation section
   detects whether Docker is available and skips itself cleanly if not,
   rather than failing the run.
