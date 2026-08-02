@@ -22,9 +22,9 @@ prediction history, use either one:
     below, use it as the permanent link, it does not need to change even if
     the Codespace itself is ever deleted and recreated, only the redirect
     target does. Direct Codespace URL:
-    https://superkart-deploy2-qg4x49q6w6h9x5v-8501.app.github.dev
-- Streamlit app: https://superkart-deploy2-qg4x49q6w6h9x5v-8502.app.github.dev
-- Backend API: https://superkart-deploy2-qg4x49q6w6h9x5v-7860.app.github.dev
+    https://superkart-deploy3-wj54597j97f5vjp-8501.app.github.dev
+- Streamlit app: https://superkart-deploy3-wj54597j97f5vjp-8502.app.github.dev
+- Backend API: https://superkart-deploy3-wj54597j97f5vjp-7860.app.github.dev
 
 If the underlying Codespace URL ever changes, update it in three places: the
 notebook's closing "Deployed Apps" section, both `README.md` files, and the

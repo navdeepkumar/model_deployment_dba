@@ -648,7 +648,7 @@ brings its containers back up on its own instead of needing another
 manual `docker run`.
 
 Updated both `README.md` files with the new Codespace's URLs
-(`superkart-deploy2-qg4x49q6w6h9x5v`) and a note about the restart
+(`superkart-deploy3-wj54597j97f5vjp`) and a note about the restart
 policy. Filled in the notebook's `model_root_url` placeholder with the
 new backend URL and re-ran the full notebook end to end, all 94 code
 cells executed clean including the previously skipped live inference
@@ -835,3 +835,45 @@ explanation but the notebook's own Deployed Apps section never caught up
 to it. Added the same note there, folded into `build_notebook.py`, and
 verified against a scratch rebuild the same way as the two edits before
 it.
+
+## Codespace stopped again, this time the resume script was not enough
+
+The Codespace had gone idle and shut down again as expected, running
+`scripts/resume_codespace.ps1` brought it back to an Available state and
+the three containers restarted cleanly under their `unless-stopped`
+policy, but this time all three public URLs kept returning a bare 404
+straight from GitHub's edge proxy even after the script finished, even
+though every container answered with a 200 on `curl localhost` from
+inside the Codespace's own VM and a raw SSH tunnel to the same port also
+worked fine. Toggling port visibility private then public again, fully
+restarting the three containers, and even stopping and starting the whole
+Codespace through the REST API instead of the SSH-triggered resume all
+came back with the same 404, and a brand new throwaway port on the same
+VM hit the identical wall, which ruled out anything specific to ports
+7860, 8501, or 8502 and pointed at the Codespace's own port forwarding
+registration being stuck at the infrastructure level. This is the same
+failure mode seen once before when the very first deployment Codespace
+was created from a prebuild image in a region that never registered
+forwarded ports correctly, that time a fresh Codespace fixed it, so the
+same fix was applied here.
+
+Tried `gh codespace rebuild` first since it keeps the same name and URLs
+instead of a full recreate, but a rebuild also wipes the underlying
+Docker storage layer even without the `--full` flag, so all three images
+and their build cache had to be rebuilt from source afterward and the
+rebuild did not clear whatever was stuck in the port forwarding path
+either. Created a fresh Codespace, `superkart-deploy3`, in the same
+region and machine type as before but without a prebuild, rebuilt the
+three Docker images from `backend_files/`, `frontend_files/`, and
+`frontend_streamlit/`, started the containers the same way as the
+original deployment, and forwarded and published all three ports, which
+this time worked immediately.
+
+Replaced every reference to the old Codespace name with the new one
+across `README.md` in both repositories, `build_notebook.py`,
+`scripts/resume_codespace.ps1` in both repositories, and the notebook's
+own `model_root_url` variable and Deployed Apps links cell, using a small
+byte-level find and replace script so line endings stayed untouched. The
+custom domain `superkart.navdeepkumar.in` still needs its redirect target
+pointed at the new Codespace's Web Components URL, that redirect lives
+outside this repository so only the user can update it.
