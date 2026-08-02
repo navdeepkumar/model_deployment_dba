@@ -827,3 +827,11 @@ domain means the "start here" link in both READMEs and the notebook stays
 permanent even if the Codespace itself is ever deleted and recreated,
 only the redirect target and the direct link underneath it would need
 updating in that case.
+
+The user then hit GitHub's one-time "you are about to access a development
+port" interstitial firsthand while testing a link and asked for a note
+about it in the notebook, both README files already carried this
+explanation but the notebook's own Deployed Apps section never caught up
+to it. Added the same note there, folded into `build_notebook.py`, and
+verified against a scratch rebuild the same way as the two edits before
+it.
