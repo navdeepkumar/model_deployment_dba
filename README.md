@@ -17,9 +17,18 @@ repository, the bare minimum deployment package that repository holds. Two
 frontends run side by side against the same backend and share the same
 prediction history, use either one:
 
-- Web Components workflow app (start here): https://superkart-deploy2-qg4x49q6w6h9x5v-8501.app.github.dev
+- Web Components workflow app (start here): https://superkart.navdeepkumar.in/
+  - This is a custom domain with a redirect pointed at the Codespace URL
+    below, use it as the permanent link, it does not need to change even if
+    the Codespace itself is ever deleted and recreated, only the redirect
+    target does. Direct Codespace URL:
+    https://superkart-deploy2-qg4x49q6w6h9x5v-8501.app.github.dev
 - Streamlit app: https://superkart-deploy2-qg4x49q6w6h9x5v-8502.app.github.dev
 - Backend API: https://superkart-deploy2-qg4x49q6w6h9x5v-7860.app.github.dev
+
+If the underlying Codespace URL ever changes, update it in three places: the
+notebook's closing "Deployed Apps" section, both `README.md` files, and the
+custom domain's redirect target.
 
 The first visit to any of these links shows a one-time GitHub notice about
 accessing a development port, this is expected, click Continue to reach

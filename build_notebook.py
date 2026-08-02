@@ -953,6 +953,40 @@ code(
     ")\n"
     "preview"
 )
+md(
+    "## Summary and Observations\n"
+    "- Twelve candidates went into this comparison, six algorithms in both their baseline and "
+    "tuned form, all ranked on validation RMSE alone, with the test set held back completely.\n"
+    "- The top four candidates land within about six RMSE points of each other: XGBoost Tuned "
+    "(296.20), Random Forest Tuned (299.35), Bagging Tuned (301.34), and Random Forest Baseline "
+    "(302.33). Any of the top three or four would have been a defensible choice, XGBoost Tuned "
+    "wins by a narrow margin rather than a decisive one.\n"
+    "- Tuning paid off most for XGBoost and Gradient Boosting, each dropping validation RMSE by "
+    "roughly 15 to 25 points over their baseline. Random Forest barely moved (302.33 to 299.35), "
+    "its untuned defaults were already close to as good as `GridSearchCV` could find on this "
+    "data. Decision Tree improved the most in relative terms, tuning took a badly overfit tree "
+    "(train RMSE of 0, validation RMSE of 406.33) down to a validation RMSE of 332.48 by simply "
+    "constraining depth and leaf size.\n"
+    "- AdaBoost trails every other model at both stages by a wide margin, validation RMSE above "
+    "496 versus the low 300s for the leaders, R-squared around 0.79 versus above 0.92. Its "
+    "sequential reweighting of misclassified points suits classification and noisy outlier "
+    "correction more than this kind of smooth, continuous regression target, the boosted trees "
+    "and bagged ensembles fit the sales curve better here.\n"
+    "- Across nearly every model, tuned train RMSE comes out higher than baseline train RMSE. "
+    "That is the tuning process working as intended, `GridSearchCV` is trading a tighter fit on "
+    "data it has already seen for a better one on data it has not, and the validation numbers "
+    "confirm the trade paid off for five of the six algorithms.\n"
+    "- The selected model, XGBoost (Tuned) with `max_depth=7`, `n_estimators=150`, and "
+    "`learning_rate=0.03`, was evaluated on the test set for the first time only after that "
+    "selection was locked in. Test RMSE came out at 283.78 with an R-squared of 0.928, slightly "
+    "better than its own validation RMSE. That is a reassuring sign, picking the best model on "
+    "validation did not just get lucky on that particular split, data it never influenced "
+    "performs at least as well.\n"
+    "- The save and reload round trip through `joblib` produces bit for bit identical "
+    "predictions on the test set, confirming the serialized pipeline is safe to hand off to the "
+    "Flask backend exactly as fitted, no separate preprocessing step to keep in sync at "
+    "inference time."
+)
 
 # =====================================================================
 # Deployment - Backend
@@ -4048,6 +4082,29 @@ md(
     "4. Wire the deployed API into SuperKart's procurement systems so quarterly forecasts are generated automatically, ahead of stock replenishment decisions rather than after the fact.\n"
     "5. When opening a new store, capture `Store_Size`, `Store_Location_City_Type`, `Store_Type`, and `Store_Establishment_Year` from day one. The model can forecast for it immediately without retraining on store identity.\n"
     "6. Retrain periodically (for example, every quarter alongside new sales data) and track live prediction error against actuals to catch model drift early."
+)
+
+# =====================================================================
+# Deployed Apps
+# =====================================================================
+md("# Deployed Apps")
+md(
+    "The definitive list of live links for this project. If the underlying Codespace is ever "
+    "deleted and recreated, its URLs change, update the raw Codespace links here and in both "
+    "`README.md` files, the custom domain below only needs its redirect target updated to match.\n"
+    "\n"
+    "## Web Components app (start here)\n"
+    "\n"
+    "- https://superkart.navdeepkumar.in/ (custom domain, redirects to the Codespace URL below)\n"
+    "- https://superkart-deploy2-qg4x49q6w6h9x5v-8501.app.github.dev/\n"
+    "\n"
+    "## Streamlit app\n"
+    "\n"
+    "- https://superkart-deploy2-qg4x49q6w6h9x5v-8502.app.github.dev\n"
+    "\n"
+    "## Backend API\n"
+    "\n"
+    "- https://superkart-deploy2-qg4x49q6w6h9x5v-7860.app.github.dev"
 )
 
 # =====================================================================
