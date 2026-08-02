@@ -25,10 +25,16 @@ The first visit to any of these links shows a one-time GitHub notice about
 accessing a development port, this is expected, click Continue to reach
 the app. All three containers run with a `restart: unless-stopped` policy,
 so they come back on their own if the Codespace resumes from an idle stop.
-If the links do not respond at all, the Codespace itself may have been
-stopped for longer than its idle window, restart it from the
-[Codespaces list](https://github.com/codespaces). The URLs stay the same
-as long as the Codespace itself is not deleted and recreated.
+
+If the links stop responding, the Codespace has hit its idle timeout and
+stopped, and its port visibility resets to private on every stop, a plain
+restart from the [Codespaces list](https://github.com/codespaces) brings
+the containers back but leaves the ports private. Run
+[`scripts/resume_codespace.ps1`](scripts/resume_codespace.ps1) instead, it
+resumes the Codespace if needed and republishes all three ports as public
+in one step, see that script's own comments for details on why this is a
+separate step from a plain resume. The URLs stay the same as long as the
+Codespace itself is not deleted and recreated.
 
 ---
 
@@ -110,6 +116,10 @@ Model Deployment/
 │   ├── app.py                                              # Single prediction, batch prediction, history tabs
 │   ├── requirements.txt
 │   └── Dockerfile
+├── .devcontainer/
+│   └── devcontainer.json                                   # Port labels and default forwards, mirrors the deployment repo
+├── scripts/
+│   └── resume_codespace.ps1                                # One command Codespace resume plus port republish
 ├── build_notebook.py                                       # Authoring tool: programmatically assembles the notebook
 ├── execute_notebook.py                                     # Authoring tool: executes the notebook end-to-end locally
 ├── README.md                                               # This file

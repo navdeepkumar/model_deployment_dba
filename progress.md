@@ -724,3 +724,67 @@ at all). Committed and pushed the `frontend_streamlit/` addition to
 `super_kart_model_deployment` first so the Codespace could pull and build
 it, then committed the notebook, `build_notebook.py`, and both READMEs to
 `model_deployment_dba`.
+
+## Automating the Codespace port republish after a resume
+
+The Codespace stopped from idle a second time, roughly nine hours after
+the last session, all three public URLs 404ed again. Confirmed the same
+root cause as before, `state: Shutdown`, resumed it over `gh codespace
+ssh`, all three containers came back on their own from the `restart:
+unless-stopped` policy, but port visibility had reset to private on every
+one of the three ports, as it does on every stop. Forwarded and republished
+each port by hand again and the URLs came back, then looked into whether
+this manual step could be automated away for good.
+
+First attempt was `.devcontainer/devcontainer.json`'s `portsAttributes`,
+which supports a `visibility` field on paper. Added it, along with
+`forwardPorts` for the three ports, and validated on a disposable second
+Codespace built from the same repository. The label and forwarding hint
+from `portsAttributes` were picked up correctly, confirmed through `gh
+codespace ports`, but the actual visibility stayed private regardless,
+that field does not appear to control real Codespaces port visibility,
+only editor-facing metadata.
+
+Second attempt was a `postStartCommand` / `postAttachCommand` lifecycle
+script, `publicize-ports.sh`, that would log in with the `GITHUB_TOKEN`
+lifecycle hooks are documented to receive and call `gh codespace ports
+visibility` on itself using `CODESPACE_NAME`. Tested by stopping and
+resuming the disposable Codespace and by plain reattachment, in both
+cases the script's own log file, written unconditionally on every run,
+never appeared. Confirmed directly that neither `GITHUB_TOKEN` nor
+`CODESPACE_NAME` are present in a session opened through `gh codespace
+ssh`, and that the devcontainer lifecycle log shows the relevant
+`devcontainer up` step completing as a generic no-op rather than actually
+invoking the script. Concluded these hooks are wired to the richer VS
+Code or web based connection path, not to a plain `gh` CLI resume, the
+one path this project actually uses to reach the Codespace. Removed the
+script and the two lifecycle hooks rather than leave dead configuration
+behind, kept `forwardPorts` and the port labels since those are genuinely
+read and are useful in an editor's Ports panel.
+
+Settled on the practical fix instead of a speculative one: a local
+PowerShell script, `scripts/resume_codespace.ps1`, wraps the whole
+sequence, check state, resume over `ssh` if needed, wait for the three
+containers, forward each port briefly to register its tunnel, then set
+each one's visibility to public, finishing with the three ready to use
+URLs printed out. Tested twice against the live Codespace end to end,
+once while it was already running and once after deliberately stopping
+it, confirming state detection, container readiness polling, and the
+forward-then-publicize sequence all worked, and verified with a plain
+HTTP request that all three URLs returned `200` afterward. One command,
+under two minutes, replaces what used to take four or five separate `gh`
+commands across a couple of minutes of back and forth.
+
+Also tried raising the Codespace's idle timeout from 60 to 240 minutes
+through the REST API (`PATCH /user/codespaces/{name}` with
+`idle_timeout_minutes`) to make this happen less often, the request
+returned success but the value did not actually change on a follow-up
+read, left at 60 minutes rather than chase an API quirk that was not the
+actual ask.
+
+Copied `.devcontainer/devcontainer.json` and `scripts/resume_codespace.ps1`
+into both repositories, matching how `backend_files/`, `frontend_files/`,
+and `frontend_streamlit/` already exist in both. Updated both `README.md`
+files' live deployment sections to point at the script instead of a plain
+Codespaces list restart, since a plain restart alone no longer fully
+explains how to get the URLs working again.
