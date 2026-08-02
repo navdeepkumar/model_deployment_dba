@@ -788,3 +788,42 @@ and `frontend_streamlit/` already exist in both. Updated both `README.md`
 files' live deployment sections to point at the script instead of a plain
 Codespaces list restart, since a plain restart alone no longer fully
 explains how to get the URLs working again.
+
+## Summary section for model selection, a custom domain for the Web Components app
+
+The user pointed out the Model Performance Comparison, Final Model
+Selection, and Serialization section ended right after the reload check
+with no synthesis of what the twelve-candidate comparison actually showed,
+and asked for a summary before the deployment section begins. Wrote a
+Summary and Observations subsection covering how close the top four
+candidates are on validation RMSE (all within about six points of each
+other), where tuning helped most (XGBoost, Gradient Boosting) and least
+(Random Forest, whose defaults were already close to optimal), why
+AdaBoost trails every other model by a wide margin on this kind of smooth
+regression target, the pattern of tuned train RMSE coming out higher than
+baseline train RMSE across most models (a sign tuning is trading train fit
+for generalization, exactly as intended), and the final test set and
+serialization round trip numbers. Every figure quoted comes straight from
+the notebook's own already-executed output tables, no cells needed to run
+again, this was a markdown-only insertion right before the reload check
+and the deployment section.
+
+Separately, the user had already added a "Deployed Apps" markdown cell
+directly to the notebook by hand, listing the three live URLs including a
+new custom domain, `superkart.navdeepkumar.in`, that now redirects to the
+Web Components app's Codespace URL. Refreshed that cell's wording to
+explain the redirect and note where to update things if the underlying
+Codespace URL ever changes, and split it into a header cell plus a body
+cell to match how every other section in the notebook is structured.
+Folded both this cell and the new summary section into `build_notebook.py`
+so a future full rebuild reproduces them exactly, verified by building the
+script to a scratch file and diffing its output against the real notebook
+cell by cell before deleting the scratch file.
+
+Updated both `README.md` files to lead with the custom domain for the Web
+Components app instead of the raw Codespace URL, keeping the Codespace URL
+alongside it as the direct link the custom domain redirects to. The custom
+domain means the "start here" link in both READMEs and the notebook stays
+permanent even if the Codespace itself is ever deleted and recreated,
+only the redirect target and the direct link underneath it would need
+updating in that case.
